@@ -269,6 +269,106 @@ hasCJKLanguage: false                # ← 中文内容建议改为 true
 
 ---
 
+## 内容创作指南（GitHub 网页端操作）
+
+最常见的两个动作：**新增文章** 与 **新增分类**。
+
+### 动作 1：在已有分类下新增文章
+
+**路径**：
+```
+content/post/<已存在分类>/<文章名>.md
+```
+
+**完整模板**（TOML 格式）：
+
+```toml
++++
+date = '2026-06-19'
+title = '你的文章标题'
+tags = [
+    "内存",
+    "指针",
+]
+categories = [
+    "内存",
+]
++++
+
+# 文章正文从这里开始
+
+## 小标题
+
+正文内容...
+```
+
+**操作步骤**（GitHub 网页）：
+
+1. 打开仓库 `1bit2/blog-source`
+2. 路径填 `content/post/<分类>/<文章名>.md`
+3. 复制上面的模板 + 写正文
+4. 滚到底部 → `Commit changes`
+5. 等 1-2 分钟，访问 `https://1bit2.github.io/p/<文章名>/` 验证
+
+**3 个必填字段**：
+
+| 字段 | 必填 | 作用 |
+|------|------|------|
+| `date` | ✅ | Hugo 按此排序；缺失则文章不会出现在首页 |
+| `title` | ✅ | 显示标题；缺失则用文件名 |
+| `categories` | ✅ | 必须与所在目录名**完全一致**（包括中文） |
+
+> 💡 `tags` 选填；`draft` 默认为 false，不写即发布。
+
+### 动作 2：新增一个分类
+
+需要**两个文件同时建**：
+
+| 文件 | 路径 |
+|------|------|
+| 分类索引页 | `content/categories/<新分类>/_index.md` |
+| 文章目录占位 | `content/post/<新分类>/.gitkeep` |
+
+**文件 1 模板**（YAML 格式）：
+
+```yaml
+---
+title: "算法"
+description: "算法与数据结构"
+slug: "algo"
+style:
+    background: "#34A853"
+    color: "#fff"
+---
+```
+
+> 📌 `style.background` 与 `style.color` 可选，不填使用主题默认色。
+> 📌 `slug` 控制 URL 短名，不填则用目录名（中文 URL 较长）。
+
+**文件 2**（占位文件）：写一行任意内容即可。
+
+### 最小速记卡
+
+```
+新文章 →  content/post/<分类>/<名>.md       (TOML)
+新分类 →  content/categories/<名>/_index.md  (YAML)
+       + content/post/<名>/.gitkeep
+```
+
+### 草稿与发布
+
+```toml
++++
+date = '2026-06-19'
+title = '草稿示例'
+draft = true        # ← 改 false 或删除即发布
++++
+
+# 仅本地 hugo server -D 可见，线上不显示
+```
+
+---
+
 ## 维护命令速查
 
 ```bash
