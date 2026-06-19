@@ -29,7 +29,7 @@ jobs:
         uses: peaceiris/actions-gh-pages@v3
         with:
           personal_token: ${{ secrets.PERSONAL_TOKEN }}
-          external_repository: zhangquanhua1/zhangquanhua1.github.io
+          external_repository: 1bit2/1bit2.github.io
           publish_dir: ./public
           keep_files: false
           publish_branch: main  # 明确指定推送到 main 分支
