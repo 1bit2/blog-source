@@ -3,7 +3,7 @@
 # ========================================
 
 # 网站基本信息
-baseurl: "https://1bit2.github.io/"  # 网站根URL地址
+baseurl: "https://latteratter-coder.github.io/"  # 网站根URL地址
 languageCode: en-us                          # 网站语言代码
 theme: hugo-theme-stack                      # 使用的主题名称
 title: 二进制                          # 网站标题
