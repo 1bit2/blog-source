@@ -1,2 +1,2 @@
-{{ $code := readFile (printf "static/code/%s" (.Get "file")) }}
-{{ highlight $code (.Get "lang" | default "cpp") "" }}
+{{ $path := print "static/code/" (.Get 0) }}
+{{ highlight (readFile $path) (.Get 1 | default "cpp") "" }}
