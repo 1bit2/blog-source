@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>CPU ↔ 内存 物理数据通道</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Noto+Sans+SC:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0e1a;color:#e2e8f0;font-family:'Noto Sans SC',sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden;user-select:none}
+.top{padding:8px 20px;background:#111827;border-bottom:1px solid #1e293b;display:flex;align-items:center;justify-content:space-between}
+.top h1{font-size:15px;color:#06b6d4;font-weight:700}
+.btns{display:flex;gap:6px;align-items:center}
+.btns button{background:#1e293b;border:1px solid #334155;color:#06b6d4;padding:5px 16px;border-radius:4px;cursor:pointer;font:600 13px 'Noto Sans SC'}
+.btns button:hover{background:#334155}
+.btns button:disabled{opacity:.2;cursor:default}
+.btns .si{font:600 12px 'JetBrains Mono',monospace;color:#64748b;min-width:50px;text-align:center}
+.main{flex:1;display:flex;overflow:hidden}
+.cw{flex:1;position:relative}
+canvas{display:block;width:100%;height:100%}
+.side{width:320px;background:#111827;border-left:1px solid #1e293b;padding:16px 18px;overflow-y:auto;font-size:14px;line-height:1.8;color:#94a3b8}
+.side h2{font-size:16px;color:#06b6d4;margin:0 0 8px;font-weight:700}
+.side h3{font-size:14px;color:#cbd5e1;margin:12px 0 4px}
+.side p{margin:3px 0}
+.side ul{margin:3px 0 3px 18px}
+.side code{background:#1e293b;padding:1px 5px;border-radius:2px;color:#06b6d4;font:12px 'JetBrains Mono',monospace}
+.side .hl{color:#f97316;font-weight:700}
+.side .g{color:#22c55e;font-weight:700}
+.side .r{color:#ef4444;font-weight:700}
+.btm{padding:6px 20px;background:#111827;border-top:1px solid #1e293b;display:flex;gap:20px;font:11px 'JetBrains Mono',monospace;color:#64748b}
+.btm span{display:flex;align-items:center;gap:5px}
+.btm .d{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>CPU ↔ 内存 物理数据通道</h1>
+  <div class="btns">
+    <button id="prev" disabled>&#9664; 上一步</button>
+    <span class="si" id="si"></span>
+    <button id="next">下一步 &#9654;</button>
+    <button id="replay" title="重播">&#8635;</button>
+  </div>
+</div>
+<div class="main">
+  <div class="cw"><canvas id="cv"></canvas></div>
+  <div class="side" id="desc"></div>
+</div>
+<div class="btm">
+  <span><span class="d" style="background:#f97316"></span>地址总线 (40位)</span>
+  <span><span class="d" style="background:#06b6d4"></span>数据总线 (64位)</span>
+  <span><span class="d" style="background:#a855f7"></span>控制信号</span>
+  <span><span class="d" style="background:#22c55e"></span>数据流动</span>
+</div>
+<script>
+"use strict";
+var cv=document.getElementById("cv"),G=cv.getContext("2d");
+var W,H;
+function resize(){var r=cv.parentElement.getBoundingClientRect(),d=devicePixelRatio||1;W=r.width;H=r.height;cv.width=W*d;cv.height=H*d;cv.style.width=W+"px";cv.style.height=H+"px";G.setTransform(d,0,0,d,0,0);}
+window.addEventListener("resize",resize);resize();
+if(!G.roundRect){CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h,r){if(typeof r==="number")r={tl:r,tr:r,br:r,bl:r};this.moveTo(x+r.tl,y);this.lineTo(x+w-r.tr,y);this.quadraticCurveTo(x+w,y,x+w,y+r.tr);this.lineTo(x+w,y+h-r.br);this.quadraticCurveTo(x+w,y+h,x+w-r.br,y+h);this.lineTo(x+r.bl,y+h);this.quadraticCurveTo(x,y+h,x,y+h-r.bl);this.lineTo(x,y+r.tl);this.quadraticCurveTo(x,y,x+r.tl,y);this.closePath();};}
+
+var step=0,stepT=0,now=0;
+var FM="'JetBrains Mono',monospace",FS="'Noto Sans SC',sans-serif";
+
+/* ===== Layout constants ===== */
+/* CPU on left, DRAM on right, buses in middle */
+function layout(){
+  var cpuW=Math.min(W*.28,260),cpuH=H*.82;
+  var dramW=Math.min(W*.22,200),dramH=H*.55;
+  var cpuX=30,cpuY=(H-cpuH)/2;
+  var dramX=W-dramW-30,dramY=(H-dramH)/2;
+  var busX1=cpuX+cpuW,busX2=dramX;
+  var busMid=(busX1+busX2)/2;
+  return{cpuX:cpuX,cpuY:cpuY,cpuW:cpuW,cpuH:cpuH,dramX:dramX,dramY:dramY,dramW:dramW,dramH:dramH,busX1:busX1,busX2:busX2,busMid:busMid};
+}
+
+/* ===== Drawing ===== */
+function mono(x,y,t,c,s,a){G.save();G.fillStyle=c||"#94a3b8";G.font=(s||14)+"px "+FM;G.textAlign=a||"center";G.textBaseline="middle";G.fillText(t,x,y);G.restore();}
+function lb(x,y,t,c,s,a){G.save();G.fillStyle=c||"#94a3b8";G.font="600 "+(s||12)+"px "+FS;G.textAlign=a||"center";G.textBaseline="middle";G.fillText(t,x,y);G.restore();}
+
+function drawCPU(L,highlight){
+  var x=L.cpuX,y=L.cpuY,w=L.cpuW,h=L.cpuH;
+  /* main chip */
+  G.save();G.fillStyle="#0f172a";G.strokeStyle="#334155";G.lineWidth=2;
+  G.beginPath();G.roundRect(x,y,w,h,10);G.fill();G.stroke();G.restore();
+  /* title */
+  lb(x+w/2,y+20,"CPU","#e2e8f0",18);
+  /* internal blocks */
+  var bx=x+12,bw=w-24,bh=32,gap=8,by=y+45;
+  var blocks=[
+    {n:"寄存器文件",s:"rax/rbx/rcx/rdx",hl:highlight==="reg"},
+    {n:"ALU",s:"算术逻辑单元"},
+    {n:"MMU + TLB",s:"地址翻译",hl:highlight==="mmu"},
+    {n:"L1 Cache",s:"32 KB · 1 ns",hl:highlight==="l1"},
+    {n:"L2 Cache",s:"256 KB · 4 ns",hl:highlight==="l2"},
+    {n:"L3 Cache",s:"8 MB · 12 ns",hl:highlight==="l3"},
+    {n:"内存控制器 IMC",s:"地址解码",hl:highlight==="imc"}
+  ];
+  for(var i=0;i<blocks.length;i++){
+    var b=blocks[i],ry=by+i*(bh+gap);
+    var bg=b.hl?"#0c2445":"#111827";
+    var bd=b.hl?"#3b82f6":"#1e293b";
+    G.save();G.fillStyle=bg;G.strokeStyle=bd;G.lineWidth=b.hl?2:1;
+    if(b.hl){G.shadowColor="#3b82f6";G.shadowBlur=10;}
+    G.beginPath();G.roundRect(bx,ry,bw,bh,4);G.fill();G.stroke();G.shadowBlur=0;G.restore();
+    lb(bx+bw/2,ry+bh/2-5,b.n,"#e2e8f0",11);
+    mono(bx+bw/2,ry+bh/2+9,b.s,"#475569",9);
+  }
+  /* pins on right side */
+  var pinY=y+h*0.3;
+  for(var i=0;i<3;i++){
+    G.fillStyle="#475569";G.fillRect(x+w-2,pinY+i*40,8,4);
+  }
+}
+
+function drawDRAM(L,highlight){
+  var x=L.dramX,y=L.dramY,w=L.dramW,h=L.dramH;
+  /* module outline */
+  G.save();G.fillStyle="#0f172a";G.strokeStyle="#334155";G.lineWidth=2;
+  G.beginPath();G.roundRect(x,y,w,h,8);G.fill();G.stroke();G.restore();
+  lb(x+w/2,y+16,"DDR4 内存条","#e2e8f0",14);
+  /* chips grid */
+  var rows=6,cols=4,cw=(w-20)/cols,ch=(h-50)/rows;
+  for(var r=0;r<rows;r++)for(var c=0;c<cols;c++){
+    var cx=x+10+c*cw,cy=y+36+r*ch;
+    var isHL=highlight&&r===highlight.r&&c===highlight.c;
+    G.fillStyle=isHL?"#1a3a0a":"#111827";
+    G.strokeStyle=isHL?"#22c55e":"#1e293b";
+    G.lineWidth=isHL?2:1;
+    G.beginPath();G.rect(cx+1,cy+1,cw-2,ch-2);G.fill();G.stroke();
+    if(isHL){G.save();G.shadowColor="#22c55e";G.shadowBlur=8;G.stroke();G.restore();}
+  }
+  /* pins on left side */
+  var pinY=y+h*0.2;
+  for(var i=0;i<3;i++){
+    G.fillStyle="#475569";G.fillRect(x-6,pinY+i*40,8,4);
+  }
+}
+
+function drawBus(L,type,label,value,active,flowDir){
+  var x1=L.busX1+8,x2=L.dramX-8;
+  var yMap={addr:L.cpuY+L.cpuH*0.3+4,data:L.cpuY+L.cpuH*0.3+44,ctrl:L.cpuY+L.cpuH*0.3+84};
+  var cMap={addr:"#f97316",data:"#06b6d4",ctrl:"#a855f7"};
+  var y=yMap[type],c=cMap[type];
+  /* bus line */
+  G.save();G.strokeStyle=active?c:"#1e293b";G.lineWidth=active?3:2;
+  if(!active)G.setLineDash([6,6]);
+  G.beginPath();G.moveTo(x1,y);G.lineTo(x2,y);G.stroke();G.setLineDash([]);
+  /* label */
+  lb((x1+x2)/2,y-14,label,active?c:"#334155",10);
+  /* value on bus */
+  if(active&&value)mono((x1+x2)/2,y+16,value,c,12);
+  /* flow dots */
+  if(active&&flowDir){
+    var speed=1500,t=((now%speed)/speed);
+    var dir=flowDir==="right"?t:1-t;
+    var px=x1+(x2-x1)*dir;
+    G.fillStyle=c;G.globalAlpha=.8;
+    G.beginPath();G.arc(px,y,5,0,Math.PI*2);G.fill();
+    G.globalAlpha=.15;G.beginPath();G.arc(px,y,14,0,Math.PI*2);G.fill();
+    /* trail */
+    for(var i=1;i<4;i++){
+      var tt=dir-(flowDir==="right"?1:-1)*i*0.06;
+      if(tt>0&&tt<1){
+        G.globalAlpha=.3-i*0.08;
+        G.beginPath();G.arc(x1+(x2-x1)*tt,y,3,0,Math.PI*2);G.fill();
+      }
+    }
+    G.globalAlpha=1;
+  }
+  G.restore();
+}
+
+/* Cache line data visualization on the bus */
+function drawDataFlow(L,beat,filled){
+  var x1=L.busX1+8,x2=L.dramX-8;
+  var y=L.cpuY+L.cpuH*0.3+44;
+  /* show 8 bytes per beat flowing */
+  if(beat>0&&beat<=8){
+    var bw=(x2-x1)*0.6,bx=(x1+x2)/2-bw/2;
+    var by=y+28;
+    /* data block */
+    G.save();G.fillStyle="#06b6d4";G.globalAlpha=.08;
+    G.beginPath();G.roundRect(bx,by,bw,24,4);G.fill();G.globalAlpha=1;
+    G.strokeStyle="#06b6d4";G.lineWidth=1;G.stroke();G.restore();
+    mono((x1+x2)/2,by+12,"拍 "+beat+": D"+((beat-1)*8)+"~D"+((beat-1)*8+7)+" (8字节)","#06b6d4",11);
+  }
+}
+
+/* 64-byte cache line grid (small, below CPU) */
+function drawCacheLine(L,filled,targetByte){
+  var cellSz=Math.min(Math.floor((L.cpuW-20)/8),18);
+  var gx=L.cpuX+10,gy=L.cpuY+L.cpuH+20;
+  if(gy+cellSz*8+20>H)return; /* not enough space */
+  lb(gx,gy-6,"缓存行 (64B)","#06b6d4",9,"left");
+  for(var r=0;r<8;r++)for(var c=0;c<8;c++){
+    var idx=r*8+c,cx=gx+c*cellSz,cy=gy+r*cellSz;
+    var isF=idx<filled,isT=idx>=targetByte&&idx<targetByte+8;
+    G.fillStyle=isT?"#2a0a0a":isF?"#052e16":"#0f172a";
+    G.strokeStyle=isT?"#ef4444":isF?"#166534":"#1e293b";
+    G.lineWidth=.5;G.beginPath();G.rect(cx,cy,cellSz-1,cellSz-1);G.fill();G.stroke();
+    if(isF&&cellSz>=12){G.fillStyle=isT?"#ef4444":"#22c55e";G.font="bold "+(cellSz*.35)+"px "+FM;G.textAlign="center";G.textBaseline="middle";
+      G.fillText(((idx*7+0x80)&0xff).toString(16).toUpperCase().padStart(2,"0"),cx+cellSz/2,cy+cellSz/2);}
+  }
+}
+
+/* ===== Steps ===== */
+var STEPS=[
+  {desc:'<h2>CPU 和内存的物理连接</h2><p>左边是 <b>CPU 芯片</b>，右边是 <b>DDR4 内存条</b>。</p><p>它们之间通过三组物理总线连接：</p><ul><li><span class="hl">地址总线</span>（橙色）— 40根线，CPU 告诉内存"我要哪个地址"</li><li><span class="hl">数据总线</span>（青色）— 64根线，传输实际数据（8字节/拍）</li><li><span class="hl">控制总线</span>（紫色）— RAS#/CAS#/WE# 等命令信号</li></ul><p>点"下一步"看数据怎么流动。</p>',
+   draw:function(e){
+     var L=layout();
+     drawCPU(L,null);drawDRAM(L,null);
+     drawBus(L,"addr","地址总线 (40位)","",false);
+     drawBus(L,"data","数据总线 (64位/通道)","",false);
+     drawBus(L,"ctrl","控制总线 (RAS/CAS/WE)","",false);
+   }},
+
+  {desc:'<h2>CPU 发出读请求</h2><p>CPU 要执行 <code>mov rax, [0x7F3456967890]</code></p><ol><li>MMU 将虚拟地址翻译成物理地址 <code>0x1ABCDEF80890</code></li><li>查 L1/L2/L3 Cache — 全部 <span class="r">MISS</span></li><li>内存控制器 IMC 通过<span class="hl">地址总线</span>发出物理地址</li></ol>',
+   draw:function(e){
+     var L=layout();
+     drawCPU(L,"imc");drawDRAM(L,null);
+     drawBus(L,"addr","地址总线",PA,true,"right");
+     drawBus(L,"data","数据总线 (64位/通道)","",false);
+     drawBus(L,"ctrl","控制信号","#a855f7",true);
+     mono(L.busMid,L.cpuY+L.cpuH*0.3+84+28,"RAS# LOW → ACTIVATE","#a855f7",11);
+   }},
+
+  {desc:'<h2>DRAM 响应: 定位 + 读取</h2><p>内存收到地址后：</p><ol><li><span class="hl">RAS#</span>: 锁存行地址，打开行缓冲器（整行 16KB 读入）</li><li><span class="hl">CAS#</span>: 锁存列地址，从行缓冲器中选出数据</li></ol><p>DRAM 准备好了，开始发送数据。</p>',
+   draw:function(e){
+     var L=layout();
+     drawCPU(L,"imc");drawDRAM(L,{r:2,c:1});
+     drawBus(L,"addr","地址总线","Row+Col",true,"right");
+     drawBus(L,"data","数据总线","","",false);
+     drawBus(L,"ctrl","控制信号","CAS# READ",true);
+   }},
+
+  {desc:'<h2>DDR4 突发传输: 8拍 × 8字节 = 64字节</h2><p>数据总线 64 位宽 = 每拍传 8 字节。</p><p>突发长度 BL=8，连续传 8 拍 = 64 字节 = <b>一个缓存行</b>。</p><p>DDR 双沿传输：时钟上升沿+下降沿各传一次，4 个周期传完。</p><p><span class="hl">注意: 取回的是对齐地址 '+CLN+' 开始的 64 字节</span>，不是从请求地址 0x890 开始。CPU 需要的数据在缓存行偏移 0x10 处。</p>',
+   draw:function(e){
+     var L=layout();
+     var beat=Math.min(Math.floor(e/500),8),filled=beat*8;
+     drawCPU(L,"l1");drawDRAM(L,{r:2,c:1});
+     drawBus(L,"addr","地址总线","",false);
+     drawBus(L,"data","数据总线 (64位)","拍 "+beat+"/8",true,"left");
+     drawBus(L,"ctrl","控制信号","DQS 时钟",true);
+     drawDataFlow(L,beat,filled);
+     drawCacheLine(L,filled,0x10);
+   }},
+
+  {desc:'<h2>64字节缓存行逐级回填</h2><p>从 DRAM 取回的 64 字节沿数据总线回到 CPU。</p><p>数据<span class="g">逐级存入</span> L3 → L2 → L1 Cache：</p><ul><li>每级缓存一份完整的 64 字节副本</li><li>下次访问同一行数据，直接从 L1 取（1ns）</li></ul><p>然后 CPU 从 L1 按偏移 0x10 选出 8 字节，写入 <code>rax</code> 寄存器。</p><p><span class="g">指令完成！</span></p>',
+   draw:function(e){
+     var L=layout();
+     var phase=Math.min(Math.floor(e/600),5);
+     drawCPU(L,phase>=4?"reg":phase>=3?"l1":phase>=2?"l2":"l3");
+     drawDRAM(L,{r:2,c:1});
+     drawBus(L,"addr","地址总线","",false);
+     drawBus(L,"data","数据总线","64B 返回",phase<4,"left");
+     drawBus(L,"ctrl","控制信号","",false);
+     drawCacheLine(L,64,0x10);
+     /* fill indicators */
+     if(phase>=1)lb(L.cpuX+L.cpuW/2,L.cpuY+L.cpuH+12,"L3 ← 64B ✓","#22c55e",10);
+     if(phase>=2)lb(L.cpuX+L.cpuW/2,L.cpuY+L.cpuH+24,"L2 ← 64B ✓","#22c55e",10);
+     if(phase>=3)lb(L.cpuX+L.cpuW/2,L.cpuY+L.cpuH+36,"L1 ← 64B ✓","#22c55e",10);
+     if(phase>=4)mono(L.cpuX+L.cpuW/2,L.cpuY+L.cpuH+52,"rax ← L1[+0x10]","#22c55e",13);
+   }},
+
+  {desc:'<h2>完整路径总结</h2><h3>最慢路径 ~500ns</h3><ol><li>TLB Miss → 4级页表遍历 (~400ns, 4次内存访问)</li><li>L1/L2/L3 全部 Miss</li><li>DRAM ACTIVATE + READ (~60ns)</li><li>DDR 突发 64B (~20ns)</li><li>逐级回填 + CPU 读取</li></ol><h3>最快路径 ~2ns</h3><p>TLB Hit + L1 Hit → 直接从 L1 读取。</p><h3>差距: <span class="hl">250 倍</span></h3><p>缓存 + TLB 让 CPU 尽量少等内存。</p>',
+   draw:function(e){
+     var L=layout();
+     drawCPU(L,null);drawDRAM(L,null);
+     drawBus(L,"addr","地址总线 (40位)","",false);
+     drawBus(L,"data","数据总线 (64位)","",false);
+     drawBus(L,"ctrl","控制总线","",false);
+     /* summary text in the middle */
+     var mx=(L.busX1+L.busX2)/2,my=L.cpuY+L.cpuH*0.6;
+     mono(mx,my,"最慢 ~500ns","#ef4444",16);
+     mono(mx,my+24,"最快 ~2ns","#22c55e",16);
+     mono(mx,my+52,"差距 250×","#06b6d4",20);
+   }}
+];
+var PA="0x1ABCDEF80890",CLN="0x1ABCDEF80880";
+
+/* ===== Engine ===== */
+function show(s){
+  step=s;stepT=performance.now();
+  document.getElementById("desc").innerHTML=STEPS[step].desc;
+  document.getElementById("si").textContent=(step+1)+" / "+STEPS.length;
+  document.getElementById("prev").disabled=step===0;
+  document.getElementById("next").textContent=step===STEPS.length-1?"↻":"下一步 ▶";
+}
+function goNext(){if(step<STEPS.length-1)show(step+1);else show(0);}
+function goPrev(){if(step>0)show(step-1);}
+document.getElementById("next").onclick=goNext;
+document.getElementById("prev").onclick=goPrev;
+document.getElementById("replay").onclick=function(){stepT=performance.now();};
+document.addEventListener("keydown",function(e){
+  if(e.key==="ArrowRight"||e.key===" "){e.preventDefault();goNext();}
+  if(e.key==="ArrowLeft")goPrev();
+  if(e.key==="r")stepT=performance.now();
+});
+function tick(ts){now=ts;var el=ts-stepT;G.clearRect(0,0,W,H);STEPS[step].draw(el);requestAnimationFrame(tick);}
+show(0);requestAnimationFrame(tick);
+</script>
+</body>
+</html>

@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Socket 创建对象关系图</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Consolas,monospace;color:#333;padding:24px}
+h1{font-size:18px;font-weight:600;margin-bottom:4px;color:#222}
+.subtitle{font-size:12px;color:#888;margin-bottom:20px}
+
+.canvas{position:relative;width:1080px;margin:0 auto}
+svg{display:block}
+
+.card{cursor:default;transition:filter .15s}
+.card:hover{filter:drop-shadow(0 2px 8px rgba(42,122,226,.2))}
+.card rect.bg{transition:stroke .15s}
+.card:hover rect.bg{stroke:#2a7ae2}
+
+.tooltip{position:absolute;display:none;background:#333;color:#eee;font-size:11px;line-height:1.6;padding:10px 14px;border-radius:5px;max-width:420px;white-space:pre-wrap;box-shadow:0 4px 16px rgba(0,0,0,.25);z-index:100;pointer-events:none}
+.tooltip::before{content:'';position:absolute;top:-6px;left:20px;border:6px solid transparent;border-bottom-color:#333;border-top:none}
+.tooltip code{background:rgba(255,255,255,.15);padding:1px 4px;border-radius:2px;font-size:11px}
+
+.legend{display:flex;gap:24px;align-items:center;margin-top:16px;padding:10px 16px;background:#f8f9fa;border:1px solid #e8e8e8;border-radius:4px;font-size:11px;color:#666;flex-wrap:wrap}
+.legend .item{display:flex;align-items:center;gap:6px}
+.legend .line-solid{width:30px;height:0;border-top:2px solid #555}
+.legend .line-dash{width:30px;height:0;border-top:2px dashed #2a7ae2}
+.legend .slab-box{width:16px;height:12px;background:#fffef5;border:1px solid #d5d0a0;border-radius:2px}
+.legend .cur-box{width:16px;height:12px;background:#eef4fb;border:1px solid #9db9dc;border-radius:2px}
+</style>
+</head>
+<body>
+<h1>Socket 创建对象关系图</h1>
+<p class="subtitle">socket(AF_INET, SOCK_STREAM, 0) · Linux 5.15.78 · 从 current 出发追踪到协议栈 · 悬停对象查看源码级详情</p>
+
+<div class="canvas">
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="720" viewBox="0 0 1080 720">
+  <defs>
+    <marker id="a-fwd" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#555"/></marker>
+    <marker id="a-back" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#2a7ae2"/></marker>
+    <marker id="a-gray" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#aaa"/></marker>
+    <marker id="a-cur" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#2a7ae2"/></marker>
+  </defs>
+
+  <!-- ===== 区域底框 ===== -->
+  <rect x="14" y="12" width="178" height="248" rx="4" fill="#eef4fb" stroke="#9db9dc"/>
+  <text x="103" y="28" text-anchor="middle" font-size="10" fill="#6b8bb3" letter-spacing="0.5">进程 / 调度上下文</text>
+
+  <rect x="206" y="12" width="204" height="248" rx="4" fill="#f8f8f8" stroke="#ddd"/>
+  <text x="308" y="28" text-anchor="middle" font-size="10" fill="#aaa" letter-spacing="0.5">fd 表</text>
+
+  <rect x="424" y="12" width="220" height="248" rx="4" fill="#f8f8f8" stroke="#ddd"/>
+  <text x="534" y="28" text-anchor="middle" font-size="10" fill="#aaa" letter-spacing="0.5">VFS 层</text>
+
+  <rect x="658" y="12" width="210" height="248" rx="4" fill="#fffef5" stroke="#d5d0a0"/>
+  <text x="763" y="28" text-anchor="middle" font-size="10" fill="#bba" letter-spacing="0.5">socket_alloc（一体分配）</text>
+
+  <rect x="882" y="12" width="184" height="248" rx="4" fill="#f8f8f8" stroke="#ddd"/>
+  <text x="974" y="28" text-anchor="middle" font-size="10" fill="#aaa" letter-spacing="0.5">传输层</text>
+
+  <!-- ===== current (per-cpu) ===== -->
+  <g class="card" data-tip="current-tip">
+    <rect class="bg" x="30" y="46" width="146" height="42" rx="4" fill="#eef4fb" stroke="#2a7ae2" stroke-width="1.8"/>
+    <text x="103" y="63" text-anchor="middle" font-weight="700" font-size="13" fill="#2a7ae2">current</text>
+    <text x="103" y="78" text-anchor="middle" font-size="10" fill="#6b8bb3">per-cpu · struct task_struct *</text>
+  </g>
+
+  <!-- ===== task_struct ===== -->
+  <g class="card" data-tip="task-tip">
+    <rect class="bg" x="30" y="110" width="146" height="88" rx="4" fill="#fff" stroke="#555" stroke-width="1.5"/>
+    <text x="103" y="128" text-anchor="middle" font-weight="600" font-size="12">struct task_struct</text>
+    <line x1="40" y1="134" x2="166" y2="134" stroke="#eee"/>
+    <text x="40" y="150" font-size="11" fill="#444"><tspan font-weight="600">pid</tspan> 进程号</text>
+    <text x="40" y="165" font-size="11" fill="#444"><tspan font-weight="600">files</tspan> → files_struct</text>
+    <text x="40" y="180" font-size="11" fill="#444"><tspan font-weight="600">nsproxy</tspan> → net_ns</text>
+    <text x="40" y="193" font-size="10" fill="#999">RLIMIT_NOFILE 上界</text>
+  </g>
+
+  <!-- ===== files_struct ===== -->
+  <g class="card" data-tip="files-tip">
+    <rect class="bg" x="220" y="46" width="176" height="102" rx="4" fill="#fff" stroke="#555" stroke-width="1.5"/>
+    <text x="308" y="64" text-anchor="middle" font-weight="600" font-size="12">struct files_struct</text>
+    <line x1="230" y1="70" x2="386" y2="70" stroke="#eee"/>
+    <text x="230" y="86" font-size="11" fill="#444"><tspan font-weight="600">fdt</tspan> → fdtable</text>
+    <text x="230" y="101" font-size="11" fill="#444"><tspan font-weight="600">next_fd</tspan> 启发起点</text>
+    <text x="230" y="116" font-size="11" fill="#444"><tspan font-weight="600">file_lock</tspan> spinlock</text>
+    <text x="230" y="131" font-size="11" fill="#444"><tspan font-weight="600">count</tspan> CLONE_FILES</text>
+    <text x="230" y="143" font-size="10" fill="#999">内嵌 fdtab（初始）</text>
+  </g>
+
+  <!-- ===== fdtable ===== -->
+  <g class="card" data-tip="fdt-tip">
+    <rect class="bg" x="220" y="166" width="176" height="82" rx="4" fill="#fff" stroke="#555" stroke-width="1.5"/>
+    <text x="308" y="184" text-anchor="middle" font-weight="600" font-size="12">struct fdtable</text>
+    <line x1="230" y1="190" x2="386" y2="190" stroke="#eee"/>
+    <text x="230" y="206" font-size="11" fill="#444"><tspan font-weight="600">max_fds</tspan> 容量</text>
+    <text x="230" y="221" font-size="11" fill="#444"><tspan font-weight="600">fd[]</tspan> → file 数组</text>
+    <text x="230" y="236" font-size="11" fill="#444"><tspan font-weight="600">open_fds</tspan> 占用位图</text>
+    <text x="230" y="244" font-size="10" fill="#999">full_fds_bits 二级摘要</text>
+  </g>
+
+  <!-- ===== fd 索引 ===== -->
+  <g class="card" data-tip="fd-tip">
+    <rect class="bg" x="236" y="260" width="144" height="0" rx="4" fill="none"/>
+  </g>
+
+  <!-- ===== struct file ===== -->
+  <g class="card" data-tip="file-tip">
+    <rect class="bg" x="438" y="46" width="192" height="108" rx="4" fill="#fff" stroke="#555" stroke-width="1.5"/>
+    <text x="534" y="64" text-anchor="middle" font-weight="600" font-size="13">struct file</text>
+    <line x1="448" y1="70" x2="620" y2="70" stroke="#eee"/>
+    <text x="448" y="86" font-size="11" fill="#444"><tspan font-weight="600">f_op</tspan> = socket_file_ops</text>
+    <text x="448" y="101" font-size="11" fill="#444"><tspan font-weight="600">private_data</tspan> → socket</text>
+    <text x="448" y="116" font-size="11" fill="#444"><tspan font-weight="600">f_path.dentry</tspan> → dentry</text>
+    <text x="448" y="131" font-size="11" fill="#444"><tspan font-weight="600">f_count</tspan> 引用计数</text>
+    <text x="448" y="146" font-size="10" fill="#999">alloc_file_pseudo() 分配</text>
+  </g>
+
+  <!-- ===== dentry ===== -->
+  <g class="card" data-tip="dentry-tip">
+    <rect class="bg" x="459" y="176" width="150" height="48" rx="4" fill="#fff" stroke="#aaa"/>
+    <text x="534" y="196" text-anchor="middle" font-size="12" fill="#555">dentry</text>
+    <text x="534" y="212" text-anchor="middle" font-size="10" fill="#999">sockfs · d_inode → inode</text>
+  </g>
+
+  <!-- ===== struct socket ===== -->
+  <g class="card" data-tip="socket-tip">
+    <rect class="bg" x="673" y="46" width="180" height="118" rx="4" fill="#fff" stroke="#555" stroke-width="1.5"/>
+    <text x="763" y="64" text-anchor="middle" font-weight="600" font-size="13">struct socket</text>
+    <line x1="683" y1="70" x2="843" y2="70" stroke="#eee"/>
+    <text x="683" y="86" font-size="11" fill="#444"><tspan font-weight="600">ops</tspan> = inet_stream_ops</text>
+    <text x="683" y="101" font-size="11" fill="#444"><tspan font-weight="600">sk</tspan> → tcp_sock</text>
+    <text x="683" y="116" font-size="11" fill="#444"><tspan font-weight="600">file</tspan> → struct file</text>
+    <text x="683" y="131" font-size="11" fill="#444"><tspan font-weight="600">state</tspan> = SS_UNCONNECTED</text>
+    <text x="683" y="146" font-size="11" fill="#444"><tspan font-weight="600">type</tspan> = SOCK_STREAM</text>
+    <text x="683" y="158" font-size="10" fill="#999">wq.wait 等待队列头</text>
+  </g>
+
+  <!-- ===== struct inode ===== -->
+  <g class="card" data-tip="inode-tip">
+    <rect class="bg" x="673" y="176" width="180" height="48" rx="4" fill="#fff" stroke="#aaa"/>
+    <text x="763" y="196" text-anchor="middle" font-size="12" fill="#555">struct inode (vfs_inode)</text>
+    <text x="763" y="212" text-anchor="middle" font-size="10" fill="#999">S_IFSOCK | 0777</text>
+  </g>
+
+  <!-- ===== tcp_sock ===== -->
+  <g class="card" data-tip="tcpsock-tip">
+    <rect class="bg" x="896" y="46" width="156" height="150" rx="4" fill="#fff" stroke="#555" stroke-width="1.5"/>
+    <text x="974" y="64" text-anchor="middle" font-weight="600" font-size="12">struct tcp_sock</text>
+    <line x1="906" y1="70" x2="1042" y2="70" stroke="#eee"/>
+    <text x="906" y="86" font-size="11" fill="#444"><tspan font-weight="600">sk_prot</tspan> = tcp_prot</text>
+    <text x="906" y="101" font-size="11" fill="#444"><tspan font-weight="600">sk_socket</tspan> → socket</text>
+    <text x="906" y="116" font-size="11" fill="#444"><tspan font-weight="600">sk_state</tspan> = TCP_CLOSE</text>
+    <text x="906" y="131" font-size="11" fill="#444"><tspan font-weight="600">snd_cwnd</tspan> = 10</text>
+    <text x="906" y="146" font-size="10" fill="#999">继承: icsk → inet → sock</text>
+    <text x="906" y="160" font-size="10" fill="#999">tcp_prot.slab 分配</text>
+    <text x="906" y="174" font-size="10" fill="#999">tcp_init_sock() 初始化</text>
+    <text x="906" y="188" font-size="10" fill="#999">RTO=1s · ssthresh=∞</text>
+  </g>
+
+  <!-- ===== 箭头：current → task_struct (虚线蓝) ===== -->
+  <path d="M103,88 L103,106" stroke="#2a7ae2" stroke-width="1.5" stroke-dasharray="5,3" fill="none" marker-end="url(#a-cur)"/>
+  <text x="118" y="100" font-size="9" fill="#2a7ae2">解引用 per-cpu 变量</text>
+
+  <!-- ===== task_struct.files → files_struct ===== -->
+  <line x1="176" y1="130" x2="216" y2="90" stroke="#555" stroke-width="1.8" marker-end="url(#a-fwd)"/>
+  <text x="196" y="100" font-size="9" fill="#555">files</text>
+
+  <!-- ===== files_struct.fdt → fdtable ===== -->
+  <line x1="308" y1="148" x2="308" y2="162" stroke="#555" stroke-width="1.8" marker-end="url(#a-fwd)"/>
+  <text x="324" y="160" font-size="9" fill="#555">fdt</text>
+
+  <!-- ===== fdtable.fd[] → file ===== -->
+  <line x1="396" y1="210" x2="434" y2="100" stroke="#555" stroke-width="1.8" marker-end="url(#a-fwd)"/>
+  <text x="430" y="165" font-size="9" fill="#555">fdt-&gt;fd[3]</text>
+
+  <!-- file.private_data → socket -->
+  <line x1="630" y1="92" x2="669" y2="92" stroke="#555" stroke-width="1.8" marker-end="url(#a-fwd)"/>
+  <text x="650" y="86" text-anchor="middle" font-size="9" fill="#555">private_data</text>
+
+  <!-- file → dentry -->
+  <line x1="534" y1="154" x2="534" y2="172" stroke="#aaa" stroke-width="1" marker-end="url(#a-gray)"/>
+
+  <!-- dentry → inode -->
+  <line x1="609" y1="200" x2="669" y2="200" stroke="#aaa" stroke-width="1" marker-end="url(#a-gray)"/>
+  <text x="639" y="194" text-anchor="middle" font-size="9" fill="#aaa">d_inode</text>
+
+  <!-- socket.sk → tcp_sock -->
+  <line x1="853" y1="92" x2="892" y2="92" stroke="#555" stroke-width="1.8" marker-end="url(#a-fwd)"/>
+  <text x="872" y="86" text-anchor="middle" font-size="9" fill="#555">sk</text>
+
+  <!-- ===== 回指箭头（虚线蓝色） ===== -->
+  <path d="M896,112 L858,112" stroke="#2a7ae2" stroke-width="1.3" stroke-dasharray="5,3" fill="none" marker-end="url(#a-back)"/>
+  <text x="877" y="107" text-anchor="middle" font-size="9" fill="#2a7ae2">sk_socket</text>
+
+  <path d="M673,122 L638,110" stroke="#2a7ae2" stroke-width="1.3" stroke-dasharray="5,3" fill="none" marker-end="url(#a-back)"/>
+  <text x="655" y="125" text-anchor="middle" font-size="9" fill="#2a7ae2">file</text>
+
+  <!-- socket ↔ inode -->
+  <path d="M730,164 L730,174" stroke="#2a7ae2" stroke-width="1.2" stroke-dasharray="4,3" fill="none" marker-end="url(#a-back)"/>
+  <text x="712" y="175" text-anchor="end" font-size="8" fill="#2a7ae2">SOCK_INODE()</text>
+  <path d="M810,176 L810,166" stroke="#2a7ae2" stroke-width="1.2" stroke-dasharray="4,3" fill="none" marker-end="url(#a-back)"/>
+  <text x="828" y="175" text-anchor="start" font-size="8" fill="#2a7ae2">SOCKET_I()</text>
+
+  <!-- ===== 访问路径 ===== -->
+  <rect x="14" y="280" width="1052" height="66" rx="5" fill="#eef4fb" stroke="#9db9dc"/>
+  <text x="30" y="302" font-weight="700" font-size="13" fill="#2a7ae2">访问路径（从 current 到 fd）</text>
+  <text x="30" y="320" font-size="11" fill="#444" xml:space="preserve">current  (per-cpu)  →  current-&gt;files  →  files-&gt;fdt  →  fdt-&gt;fd[fd]  →  struct file  →  file-&gt;private_data  →  struct socket  →  sock-&gt;sk  →  tcp_sock</text>
+  <text x="30" y="338" font-size="10" fill="#888">get_task_files() / rcu_dereference(files-&gt;fdt) / files_lookup_fd_rcu(files, fd) 等宏负责安全解引用；扩容期间 RCU 保证旧表仍可读。</text>
+
+  <!-- ===== 创建顺序 ===== -->
+  <rect x="14" y="360" width="1052" height="108" rx="5" fill="#f8f9fa" stroke="#e0e0e0"/>
+  <text x="30" y="382" font-weight="700" font-size="13" fill="#333">创建顺序（socket() 系统调用内部）</text>
+
+  <circle cx="36" cy="402" r="10" fill="#555"/><text x="36" y="406" text-anchor="middle" font-size="10" fill="#fff" font-weight="700">1</text>
+  <text x="54" y="406" font-size="11" fill="#444">current = get_current()：per-cpu 变量取出当前线程 task_struct；current-&gt;files 取到 files_struct（CLONE_FILES 可能共享）</text>
+
+  <circle cx="36" cy="422" r="10" fill="#555"/><text x="36" y="426" text-anchor="middle" font-size="10" fill="#fff" font-weight="700">2</text>
+  <text x="54" y="426" font-size="11" fill="#444">sock_alloc() → new_inode_pseudo() → sock_alloc_inode() → kmem_cache_alloc(sock_inode_cachep) → socket + inode 空壳（ops/sk/file 均 NULL）</text>
+
+  <circle cx="36" cy="442" r="10" fill="#555"/><text x="36" y="446" text-anchor="middle" font-size="10" fill="#fff" font-weight="700">3</text>
+  <text x="54" y="446" font-size="11" fill="#444">inet_create() → sk_alloc(tcp_prot.slab) → sock_init_data() 建立 socket.sk ↔ sock.sk_socket 双向关联；socket.ops = inet_stream_ops；tcp_init_sock() 初始化 TCP 参数</text>
+
+  <circle cx="36" cy="462" r="10" fill="#555"/><text x="36" y="466" text-anchor="middle" font-size="10" fill="#fff" font-weight="700">4</text>
+  <text x="54" y="466" font-size="11" fill="#444">sock_map_fd()：alloc_fd() 在 fdt-&gt;open_fds 标记占用 → sock_alloc_file() 创建 file 并双向关联 → fd_install() 把 file 指针写入 fdt-&gt;fd[fd]，fd 对用户态可见</text>
+
+  <!-- ===== container_of 说明 ===== -->
+  <rect x="14" y="484" width="1052" height="72" rx="5" fill="#f0f4f8" stroke="#c5d5e4"/>
+  <text x="30" y="506" font-weight="700" font-size="12" fill="#333">container_of 零开销转换（socket_alloc 内部）</text>
+  <text x="30" y="524" font-size="11" fill="#555">SOCKET_I(inode): addr = inode_ptr − offsetof(socket_alloc, vfs_inode) → &amp;addr-&gt;socket</text>
+  <text x="30" y="540" font-size="11" fill="#555">SOCK_INODE(sock): addr = sock_ptr − offsetof(socket_alloc, socket) → &amp;addr-&gt;vfs_inode</text>
+  <text x="820" y="540" font-size="10" fill="#999">编译期偏移，运行时仅指针减法</text>
+
+  <!-- ===== VFS 回调路径 ===== -->
+  <rect x="14" y="570" width="1052" height="22" rx="3" fill="#fafafa" stroke="#e8e8e8"/>
+  <text x="30" y="585" font-size="10" fill="#888">read(fd) → vfs_read → file-&gt;f_op-&gt;read_iter → sock_read_iter → sock-&gt;ops-&gt;recvmsg → inet_recvmsg → sk-&gt;sk_prot-&gt;recvmsg → tcp_recvmsg</text>
+
+  <!-- ===== fd 查找过程 ===== -->
+  <rect x="14" y="604" width="1052" height="104" rx="5" fill="#fffef5" stroke="#d5d0a0"/>
+  <text x="30" y="626" font-weight="700" font-size="12" fill="#665">fd 定位过程（alloc_fd 内部 · 两级位图）</text>
+  <text x="30" y="644" font-size="11" fill="#555">❶ 取 files-&gt;fdt（RCU 读）→ 从 files-&gt;next_fd 起扫，跳过已知已满的低位区</text>
+  <text x="30" y="660" font-size="11" fill="#555">❷ find_next_fd：先在 full_fds_bits 跳过全满的 64-fd 块，再在 open_fds[块] 内 find_next_zero_bit 精确命中空闲位</text>
+  <text x="30" y="676" font-size="11" fill="#555">❸ __set_open_fd 置 open_fds 位（若该 ulong 全 1 则同步置 full_fds_bits 摘要位）；fdt-&gt;fd[fd] 仍为 NULL</text>
+  <text x="30" y="692" font-size="11" fill="#555">❹ fd_install 时 rcu_assign_pointer(fdt-&gt;fd[fd], file) —— 此刻起 fd 才对用户态可见；扩容中走慢路径持 file_lock</text>
+</svg>
+
+<!-- Tooltip 内容 -->
+<div class="tooltip" id="current-tip">per-cpu 变量，指向当前 CPU 上运行的 task_struct
+
+定义: <code>arch/x86/include/asm/current.h</code>
+  DECLARE_PER_CPU(struct task_struct *, current_task);
+  static __always_inline struct task_struct *get_current(void)
+  { return this_cpu_read_stable(current_task); }
+
+<code>#define current get_current()</code>
+
+每个 CPU 核独立一份；调度切换时更新。
+socket() 系统调用在内核态通过 current 访问当前进程的 files/nsproxy/signal 等资源。</div>
+
+<div class="tooltip" id="task-tip">每个线程/进程一个 task_struct（task 和 thread 同结构）
+
+关键字段:
+  <code>pid</code> / <code>tgid</code>   线程号 / 进程号
+  <code>files</code>            → files_struct（CLONE_FILES 共享）
+  <code>nsproxy</code>          → net_ns（网络命名空间）
+  <code>signal-&gt;rlimit</code>   RLIMIT_NOFILE 等软硬限制
+  <code>cred</code>             权限/LSM 上下文
+
+socket() 调用路径:
+  __sys_socket 通过 current-&gt;nsproxy-&gt;net_ns 取网络命名空间
+  通过 current-&gt;files 写 fd 表</div>
+
+<div class="tooltip" id="files-tip">每个进程/线程默认独立，clone(CLONE_FILES) 时共享
+
+关键字段:
+  <code>fdt</code>      当前活跃 fdtable（初始指向内嵌 fdtab）
+  <code>fdtab</code>    内嵌 fdtable（64 槽，避免短命进程 kmalloc）
+  <code>next_fd</code>   启发式扫描起点，避免每次从 0 开始
+  <code>file_lock</code> spinlock，保护位图/数组/扩容
+  <code>count</code>     引用计数（共享 &gt; 1）
+  <code>resize_in_progress</code>  扩容互斥标志
+  <code>resize_wait</code>         并发扩容等待队列
+
+扩容时 synchronize_rcu 等待所有 RCU 读者退出，
+然后 copy_fdtable + rcu_assign_pointer 切换 fdt 指针，
+旧表 call_rcu 延迟释放。</div>
+
+<div class="tooltip" id="fdt-tip">管理一个进程所有 fd 的索引结构
+
+关键字段:
+  <code>max_fds</code>       当前容量（64/128/256... 2 幂增长）
+  <code>fd[]</code>          file 指针数组（kvmalloc_array）
+  <code>open_fds</code>      一级占用位图（每 bit 一个 fd）
+  <code>close_on_exec</code> exec 时自动关闭的位图
+  <code>full_fds_bits</code> 二级摘要：每 bit 概括 64 fd 是否全满
+
+内嵌初始化（files_struct.fdtab）:
+  fd         → files-&gt;fd_array
+  open_fds   → files-&gt;open_fds_init
+  close_on_exec → files-&gt;close_on_exec_init
+  full_fds_bits → files-&gt;full_fds_bits_init
+
+扩容后 fdt 指向 kmalloc 的新表，三块位图一次 kvmalloc 首尾相接。</div>
+
+<div class="tooltip" id="fd-tip">进程看到的文件描述符（整数索引）
+
+fdt-&gt;fd[fd] 指向 struct file
+上界受 <code>RLIMIT_NOFILE</code> + <code>sysctl_nr_open</code> 双重限制
+
+alloc_fd() 两级位图查找:
+  full_fds_bits → find_next_zero_bit（跳过全满 64-fd 块）
+  open_fds[块] → find_next_zero_bit（精确命中空闲位）
+
+分配与安装分离:
+  alloc_fd    仅置位图，fdt-&gt;fd[fd] 仍为 NULL
+  fd_install  rcu_assign_pointer 写入 file 指针
+  中途失败 put_unused_fd 归还位图，不产生悬挂 fd</div>
+
+<div class="tooltip" id="file-tip"><code>alloc_file_pseudo()</code> 分配，file slab 管理
+<code>socket_file_ops</code> 定义:
+  read_iter  → <code>sock_read_iter</code>
+  write_iter → <code>sock_write_iter</code>
+  poll       → <code>sock_poll</code>
+  release    → <code>sock_close</code>
+  mmap       → <code>sock_mmap</code>
+<code>stream_open()</code> 标记 FMODE_STREAM
+file-&gt;private_data = socket（双向关联）</div>
+
+<div class="tooltip" id="dentry-tip"><code>d_alloc_pseudo()</code> 创建
+挂在 sock_mnt 下
+dname 取自协议名，如 "TCP"
+d_inode 指向同一 socket_alloc 中的 vfs_inode</div>
+
+<div class="tooltip" id="socket-tip">嵌在 <code>socket_alloc</code> 偏移 0 处
+与 vfs_inode 一体分配（同一 slab 对象）
+
+<code>inet_stream_ops</code> 定义:
+  bind    → <code>inet_bind</code>
+  connect → <code>inet_stream_connect</code>
+  listen  → <code>inet_listen</code>
+  accept  → <code>inet_accept</code>
+  sendmsg → <code>inet_sendmsg</code>
+  recvmsg → <code>inet_recvmsg</code>
+  poll    → <code>tcp_poll</code>
+
+sock_alloc_inode() 从 sock_inode_cachep 分配</div>
+
+<div class="tooltip" id="inode-tip">嵌在 <code>socket_alloc</code> 紧接 socket 之后
+i_mode = S_IFSOCK | S_IRWXUGO
+i_op = <code>sockfs_inode_ops</code>
+i_ino = <code>get_next_ino()</code>（递增）
+
+<code>SOCKET_I(inode)</code>:
+  container_of → socket_alloc → .socket
+
+<code>SOCK_INODE(socket)</code>:
+  container_of → socket_alloc → .vfs_inode
+
+零开销：编译期偏移量，运行时仅指针减法</div>
+
+<div class="tooltip" id="tcpsock-tip"><code>sk_alloc()</code> 从 tcp_prot.slab 分配 (~2KB)
+继承链:
+  tcp_sock
+    └ inet_connection_sock (ICSK 定时器)
+       └ inet_sock (IP 地址/端口)
+          └ sock (通用传输层)
+             └ sock_common (最小公共)
+
+<code>tcp_init_sock()</code> 初始化:
+  重传/延迟ACK/keepalive 三个定时器
+  初始 RTO = 1s，最小 RTO = 200ms
+  初始 cwnd = 10 (RFC 6928)
+  ssthresh = 0x7fffffff
+  默认拥塞控制: CUBIC
+
+<code>sock_init_data()</code> 建立双向关联:
+  sk-&gt;sk_socket = socket
+  socket-&gt;sk = sk</div>
+</div>
+
+<!-- 图例 -->
+<div class="legend">
+  <div class="item"><div class="cur-box"></div>进程上下文（current / task_struct）</div>
+  <div class="item"><div class="line-solid"></div>正向指针引用</div>
+  <div class="item"><div class="line-dash"></div>回指 / container_of / per-cpu 解引用</div>
+  <div class="item"><div class="slab-box"></div>一体分配区域（socket_alloc 同一 slab 对象）</div>
+  <div class="item" style="color:#888">悬停对象查看源码级详情</div>
+</div>
+
+<script>
+document.querySelectorAll('.card').forEach(card => {
+  const tipId = card.getAttribute('data-tip');
+  const tip = document.getElementById(tipId);
+  if (!tip) return;
+  card.addEventListener('mouseenter', e => {
+    const r = card.querySelector('rect.bg').getBoundingClientRect();
+    const c = document.querySelector('.canvas').getBoundingClientRect();
+    let left = r.left - c.left;
+    let top = r.bottom - c.top + 8;
+    if (left + 420 > c.width) left = c.width - 420;
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+    tip.style.display = 'block';
+  });
+  card.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+});
+</script>
+</body>
+</html>

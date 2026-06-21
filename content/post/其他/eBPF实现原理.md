@@ -1,11 +1,16 @@
 +++
-date = '2026-03-11'
-title = 'eBPF 实现原理分析'
+date = '2026-04-16'
+title = 'eBPF 实现原理分析（基于 Linux 5.15.78 内核源码）'
+weight = 4
 tags = [
-    "ebpf",
+    "eBPF",
+    "BPF",
+    "verifier",
+    "JIT",
+    "BTF",
 ]
 categories = [
-    "Linux",
+    "其他",
 ]
 +++
 # eBPF 实现原理分析（基于 Linux 5.15.78 内核源码）
@@ -24,15 +29,14 @@ categories = [
   - [2.3 fentry/fexit：BPF Trampoline 机制](#23-fentryfexit-bpf-trampoline-机制)
   - [2.4 XDP 挂载机制](#24-xdp-挂载机制)
   - [2.5 BPF 程序的执行路径](#25-bpf-程序的执行路径)
-- [三、BTF（BPF Type Format）](#三btfbpf-type-format)
-  - [3.1 问题背景：传统 BPF 的可移植性困境](#31-问题背景传统-bpf-的可移植性困境)
-  - [3.2 BTF 数据格式](#32-btf-数据格式)
-  - [3.3 BTF 的生成与嵌入](#33-btf-的生成与嵌入)
-  - [3.4 BTF 在内核中的解析与使用](#34-btf-在内核中的解析与使用)
-- [四、CO-RE（Compile Once - Run Everywhere）](#四corecompile-once---run-everywhere)
-  - [4.1 CO-RE 核心思想](#41-core-核心思想)
-  - [4.2 重定位记录格式](#42-重定位记录格式)
-  - [4.3 libbpf 执行 CO-RE 重定位](#43-libbpf-执行-co-re-重定位)
+- [三、BTF 与 CO-RE：从问题到实现的完整追踪](#三btf-与-core从问题到实现的完整追踪)
+  - [3.1 先理解问题：为什么传统 BPF 不可移植？](#31-先理解问题为什么传统-bpf-不可移植)
+  - [3.2 解决思路：把"偏移量"变成"字段名"](#32-解决思路把偏移量变成字段名)
+  - [3.3 第一步：BTF 是什么——内核的"类型字典"](#33-第一步btf-是什么内核的类型字典)
+  - [3.4 第二步：CO-RE 是什么——"查字典改指令"的机制](#34-第二步core-是什么查字典改指令的机制)
+  - [3.5 完整端到端流程图](#35-完整端到端流程图)
+  - [3.6 BTF 与 CO-RE 的关系总结](#36-btf-与-core-的关系总结)
+- [四、BTF 的其他用途（不只是 CO-RE）](#四btf-的其他用途不只是-core)
 - [五、整体架构总结](#五整体架构总结)
 
 ---
@@ -703,385 +707,655 @@ BPF_PROG_RUN_ARRAY(const struct bpf_prog_array __rcu *array_rcu,
 
 ---
 
-## 三、BTF（BPF Type Format）
+## 三、BTF 与 CO-RE：从问题到实现的完整追踪
 
-### 3.1 问题背景：传统 BPF 的可移植性困境
+### 3.1 先理解问题：为什么传统 BPF 不可移植？
 
-传统的 BPF tracing 程序（如 BCC 工具）需要访问内核数据结构（如 `task_struct`、`sk_buff`），但这些结构体在不同内核版本间会变化——字段可能被添加、删除、重排或改变大小。传统做法是：
-
-1. 目标机器上安装完整的**内核头文件**（数百MB）
-2. 安装 **Clang/LLVM** 编译工具链
-3. 在目标机器上**现场编译** BPF 程序，让 Clang 根据当前内核头文件生成正确的字段偏移量
-
-这意味着每台机器都要安装庞大的编译依赖，而且编译过程耗时且脆弱。
-
-BTF 和 CO-RE 技术的引入就是为了解决这一问题。
-
-### 3.2 BTF 数据格式
-
-BTF 是一种紧凑的类型描述格式，定义在 `include/uapi/linux/btf.h`。
-
-**BTF 文件头** 描述了类型段和字符串段的位置：
+假设你写了一个 BPF 程序想读取当前进程的 PID：
 
 ```c
-// include/uapi/linux/btf.h
-#define BTF_MAGIC   0xeB9F
-#define BTF_VERSION 1
+struct task_struct *task = (void *)bpf_get_current_task();
+int pid;
+bpf_probe_read_kernel(&pid, sizeof(pid), (void *)task + 1224);
+```
 
+这里的 `1224` 是什么？是 `pid` 字段在你**编译时**那个内核版本的 `task_struct` 中的字节偏移量。问题在于：
+
+- **5.4 内核**的 `task_struct` 中 `pid` 可能在偏移 1224
+- **5.10 内核**添加了几个新字段后，`pid` 变成了偏移 1312
+- **5.15 内核**又改了布局，`pid` 变成了偏移 1296
+
+**如果你把在 5.4 上编译的程序拿到 5.15 上跑，`task + 1224` 读到的不是 `pid`，而是别的字段的数据。** 程序产生错误结果或者直接崩溃。
+
+传统的解决方案是在每台目标机器上都安装 Clang + 内核头文件，现场编译。
+
+**BTF 和 CO-RE 解决的就是这个问题：让编译好的 BPF 程序能在不同内核版本上正确运行，而不需要重新编译。**
+
+### 3.2 解决思路：把"偏移量"变成"字段名"
+
+CO-RE 的核心思想非常简单：
+
+> **不硬编码字段偏移量 `1224`，而是记录"我要访问 `task_struct` 的第 15 个成员 `pid`"这个语义信息。加载时再根据目标内核查出 `pid` 实际在哪个偏移，把指令里的数字改掉。**
+
+但要实现这个思路，需要两样东西：
+
+1. **BTF** — 提供"字典"：目标内核的 `task_struct` 长什么样，每个字段在哪个偏移
+2. **CO-RE** — 提供"查字典并改指令"的机制
+
+**BTF 是数据，CO-RE 是算法。BTF 告诉你 `pid` 在偏移 1296，CO-RE 负责把 BPF 指令中的 `1224` 改成 `1296`。**
+
+下面从源码层面追踪这整个过程。
+
+---
+
+### 3.3 第一步：BTF 是什么——内核的"类型字典"
+
+BTF（BPF Type Format）是一种**紧凑的类型描述格式**，它把整个内核的结构体定义（数万个）用几 MB 的二进制数据描述清楚。
+
+#### 3.3.1 BTF 的数据格式
+
+定义在 `include/uapi/linux/btf.h`。
+
+**文件头**（第 11 行）指明了类型段和字符串段的位置：
+
+```c
+// include/uapi/linux/btf.h:11
 struct btf_header {
-    __u16   magic;
-    __u8    version;
+    __u16   magic;       // 0xeB9F
+    __u8    version;     // 1
     __u8    flags;
     __u32   hdr_len;
-    __u32   type_off;   // 类型段偏移
-    __u32   type_len;   // 类型段长度
-    __u32   str_off;    // 字符串段偏移
-    __u32   str_len;    // 字符串段长度
+    __u32   type_off;    // 类型段在数据中的偏移
+    __u32   type_len;    // 类型段长度
+    __u32   str_off;     // 字符串段偏移
+    __u32   str_len;     // 字符串段长度
 };
 ```
 
-**每个类型** 用 `btf_type` 描述，包含类型名称、种类和大小信息：
+**每个类型**用 `btf_type` 描述（第 30 行）：
 
 ```c
-// include/uapi/linux/btf.h
+// include/uapi/linux/btf.h:30
 struct btf_type {
-    __u32 name_off;     // 类型名在字符串段中的偏移
-    __u32 info;         // bits 24-27: kind（类型种类）
-                        // bits 0-15: vlen（成员数量等）
-                        // bit 31: kind_flag
+    __u32 name_off;     // 类型名在字符串段中的偏移（如 "task_struct"）
+    __u32 info;         // bits 24-27: kind（INT/PTR/STRUCT/...）
+                        // bits 0-15: vlen（成员数量）
     union {
-        __u32 size;     // INT/ENUM/STRUCT/UNION/DATASEC 使用
-        __u32 type;     // PTR/TYPEDEF/CONST/VOLATILE 等使用
+        __u32 size;     // STRUCT/UNION/INT 用：类型的总字节大小
+        __u32 type;     // PTR/TYPEDEF 用：指向的类型 ID
     };
 };
 ```
 
-BTF 支持完整的 C 类型系统：
-
-| Kind | 编号 | 说明 | 附加数据 |
-|------|------|------|----------|
-| `BTF_KIND_INT` | 1 | 整数类型 | 编码/偏移/位宽 |
-| `BTF_KIND_PTR` | 2 | 指针 | 引用的类型 |
-| `BTF_KIND_ARRAY` | 3 | 数组 | `struct btf_array` |
-| `BTF_KIND_STRUCT` | 4 | 结构体 | `struct btf_member[]` |
-| `BTF_KIND_UNION` | 5 | 联合体 | `struct btf_member[]` |
-| `BTF_KIND_ENUM` | 6 | 枚举 | `struct btf_enum[]` |
-| `BTF_KIND_FWD` | 7 | 前向声明 | - |
-| `BTF_KIND_TYPEDEF` | 8 | 类型别名 | 引用的类型 |
-| `BTF_KIND_VOLATILE` | 9 | volatile 修饰 | 引用的类型 |
-| `BTF_KIND_CONST` | 10 | const 修饰 | 引用的类型 |
-| `BTF_KIND_RESTRICT` | 11 | restrict 修饰 | 引用的类型 |
-| `BTF_KIND_FUNC` | 12 | 函数 | 引用 FUNC_PROTO |
-| `BTF_KIND_FUNC_PROTO` | 13 | 函数原型 | `struct btf_param[]` |
-| `BTF_KIND_VAR` | 14 | 变量 | `struct btf_var` |
-| `BTF_KIND_DATASEC` | 15 | 数据段 | `struct btf_var_secinfo[]` |
-| `BTF_KIND_FLOAT` | 16 | 浮点类型 | - |
-
-对于结构体，每个成员用 `btf_member` 描述，包含成员名称、类型和**精确的位偏移量**：
+BTF 支持的类型种类（第 59 行）：
 
 ```c
-// include/uapi/linux/btf.h
+// include/uapi/linux/btf.h:59
+#define BTF_KIND_INT        1    // 整数（int, char, bool...）
+#define BTF_KIND_PTR        2    // 指针
+#define BTF_KIND_ARRAY      3    // 数组
+#define BTF_KIND_STRUCT     4    // 结构体  ← 这是 CO-RE 最关心的
+#define BTF_KIND_UNION      5    // 联合体
+#define BTF_KIND_ENUM       6    // 枚举
+#define BTF_KIND_FWD        7    // 前向声明
+#define BTF_KIND_TYPEDEF    8    // typedef
+#define BTF_KIND_VOLATILE   9
+#define BTF_KIND_CONST      10
+#define BTF_KIND_RESTRICT   11
+#define BTF_KIND_FUNC       12   // 函数
+#define BTF_KIND_FUNC_PROTO 13   // 函数原型
+#define BTF_KIND_VAR        14
+#define BTF_KIND_DATASEC    15
+#define BTF_KIND_FLOAT      16
+```
+
+**最关键的部分**：对于 `BTF_KIND_STRUCT`，每个成员用 `btf_member` 描述（第 114 行），它记录了**成员名、类型和精确的位偏移**：
+
+```c
+// include/uapi/linux/btf.h:114
 struct btf_member {
-    __u32   name_off;   // 成员名在字符串段中的偏移
+    __u32   name_off;   // 成员名（如 "pid"）在字符串段中的偏移
     __u32   type;       // 成员的类型 ID
-    __u32   offset;     // 成员的位偏移量（bit offset）
+    __u32   offset;     // 成员的位偏移（bit offset）
 };
 ```
 
-### 3.3 BTF 的生成与嵌入
+#### 3.3.2 具体例子：BTF 如何描述 task_struct
 
-BTF 的生成流程是：**DWARF 调试信息 → pahole 工具转换 → 去重的 BTF → 嵌入 vmlinux 内核镜像**
+假设 `task_struct` 在某个内核中定义为（极度简化）：
 
-**前提条件**：内核配置启用 `CONFIG_DEBUG_INFO_BTF`（`lib/Kconfig.debug`）：
-
-```
-config DEBUG_INFO_BTF
-    bool "Generate BTF typeinfo"
-    depends on !DEBUG_INFO_SPLIT && !DEBUG_INFO_REDUCED
-    help
-      Generate deduplicated BTF type information from DWARF debug info.
-      Turning this on expects presence of pahole tool, which will convert
-      DWARF type info into equivalent deduplicated BTF type info.
+```c
+struct task_struct {    // BTF type_id = 123, kind = STRUCT, size = 9024
+    // ... 前面省略很多字段 ...
+    pid_t  pid;         // btf_member: name="pid", type=INT, offset=10368 bits (= 1296 bytes)
+    pid_t  tgid;        // btf_member: name="tgid", type=INT, offset=10400 bits (= 1300 bytes)
+    // ... 后面省略很多字段 ...
+};
 ```
 
-**第一步：pahole 转换 DWARF 为 BTF**
+在 BTF 二进制数据中，这被编码为：
 
-在 `scripts/link-vmlinux.sh` 的 `gen_btf()` 函数中执行：
+```
+btf_type {
+    name_off → 指向字符串 "task_struct"
+    info → kind=STRUCT, vlen=200（假设有 200 个成员）
+    size → 9024
+}
+后跟 200 个 btf_member:
+    ...
+    btf_member { name_off→"pid",  type→INT_type_id, offset→10368 }  // 第 15 个成员
+    btf_member { name_off→"tgid", type→INT_type_id, offset→10400 }  // 第 16 个成员
+    ...
+```
+
+**这就是 BTF 的本质：它是一个把"task_struct 的 pid 字段在偏移 1296 字节处"这样的信息编码成二进制的格式。**
+
+#### 3.3.3 BTF 从哪里来——构建时生成
+
+BTF 的生成流程：**DWARF → pahole 转换 → .BTF section → 嵌入 vmlinux**
+
+在 `scripts/link-vmlinux.sh` 第 211 行的 `gen_btf()` 函数中：
 
 ```bash
-# scripts/link-vmlinux.sh
-info "BTF" ${2}
+# scripts/link-vmlinux.sh:228
 LLVM_OBJCOPY="${OBJCOPY}" ${PAHOLE} -J ${PAHOLE_FLAGS} ${1}
+# pahole -J: 读取 vmlinux 中的 DWARF 调试信息，生成去重的 BTF 并写入 .BTF section
 
-# 提取 .BTF section，设置 SHF_ALLOC 使其成为运行时镜像的一部分
+# 提取 .BTF section
 ${OBJCOPY} --only-section=.BTF --set-section-flags .BTF=alloc,readonly \
     --strip-all ${1} ${2} 2>/dev/null
 ```
 
-`pahole -J` 读取 vmlinux 中的 DWARF 调试信息，生成**去重后**的 BTF 类型信息并写入 `.BTF` section。去重后的 BTF 通常只有 **1-5 MB**，而原始 DWARF 可达上百 MB。
-
-**第二步：链接器嵌入 BTF 到 vmlinux**
-
-链接器脚本（`include/asm-generic/vmlinux.lds.h`）将 `.BTF` section 嵌入内核镜像：
+链接器脚本（`include/asm-generic/vmlinux.lds.h` 第 664 行）将 `.BTF` 嵌入内核镜像：
 
 ```c
-// include/asm-generic/vmlinux.lds.h
-#ifdef CONFIG_DEBUG_INFO_BTF
-#define BTF                             \
-    .BTF : AT(ADDR(.BTF) - LOAD_OFFSET) {      \
-        __start_BTF = .;                \
-        KEEP(*(.BTF))                   \
-        __stop_BTF = .;                 \
-    }                                   \
-    .BTF_ids : AT(ADDR(.BTF_ids) - LOAD_OFFSET) {  \
-        *(.BTF_ids)                     \
-    }
-#endif
+// include/asm-generic/vmlinux.lds.h:664
+.BTF : AT(ADDR(.BTF) - LOAD_OFFSET) {
+    __start_BTF = .;    // BTF 数据起始地址
+    KEEP(*(.BTF))
+    __stop_BTF = .;     // BTF 数据结束地址
+}
 ```
 
-`__start_BTF` 和 `__stop_BTF` 标记了 BTF 数据在内核镜像中的起止位置。
+#### 3.3.4 BTF 如何暴露给用户空间
 
-**第三步：通过 sysfs 暴露给用户空间**
-
-`kernel/bpf/sysfs_btf.c` 将 BTF 数据以 `/sys/kernel/btf/vmlinux` 文件形式暴露：
+`kernel/bpf/sysfs_btf.c` 将内核内嵌的 BTF 通过 sysfs 暴露为文件：
 
 ```c
-// kernel/bpf/sysfs_btf.c
+// kernel/bpf/sysfs_btf.c:12
 extern char __weak __start_BTF[];
 extern char __weak __stop_BTF[];
 
+// 第 32 行
 static int __init btf_vmlinux_init(void)
 {
     bin_attr_btf_vmlinux.size = __stop_BTF - __start_BTF;
-
-    if (!__start_BTF || bin_attr_btf_vmlinux.size == 0)
-        return 0;
-
     btf_kobj = kobject_create_and_add("btf", kernel_kobj);
-    if (!btf_kobj)
-        return -ENOMEM;
-
     return sysfs_create_bin_file(btf_kobj, &bin_attr_btf_vmlinux);
 }
-
-subsys_initcall(btf_vmlinux_init);
 ```
 
-用户空间的 libbpf 可以通过读取 `/sys/kernel/btf/vmlinux` 获取当前运行内核的完整类型信息，无需安装内核头文件。
+结果：用户空间可以直接读取 `/sys/kernel/btf/vmlinux` 获取当前运行内核的全部类型信息。**这就是 BTF 替代内核头文件的原理——类型信息随内核一起分发，不需要额外安装。**
 
-### 3.4 BTF 在内核中的解析与使用
+#### 3.3.5 BTF 在内核中的解析
 
-内核自身也需要解析 BTF 来支持 BPF 程序的验证。`btf_parse_vmlinux()`（`kernel/bpf/btf.c`）负责解析嵌入的 BTF：
+内核自身也解析 BTF 来支持 BPF 验证。`btf_parse_vmlinux()`（`kernel/bpf/btf.c` 第 4538 行）：
 
 ```c
-// kernel/bpf/btf.c
+// kernel/bpf/btf.c:4538
 struct btf *btf_parse_vmlinux(void)
 {
-    struct btf_verifier_env *env = NULL;
-    struct btf *btf = NULL;
-    // ...
-    btf->data = __start_BTF;
+    btf->data = __start_BTF;                         // 指向内嵌的 BTF 数据
     btf->data_size = __stop_BTF - __start_BTF;
     btf->kernel_btf = true;
     snprintf(btf->name, sizeof(btf->name), "vmlinux");
 
-    err = btf_parse_hdr(env);       // 解析 BTF 头
-    btf->nohdr_data = btf->data + btf->hdr.hdr_len;
-    err = btf_parse_str_sec(env);   // 解析字符串段
-    err = btf_check_all_metas(env); // 验证所有类型元数据
-    // ...
+    err = btf_parse_hdr(env);        // 解析文件头
+    err = btf_parse_str_sec(env);    // 解析字符串段
+    err = btf_check_all_metas(env);  // 验证所有类型元数据
 }
 ```
 
-内核中的 BTF 数据结构（`kernel/bpf/btf.c`）：
+通过 `btf_type_by_id()` 可以按 ID 查找任意类型（第 709 行）：
 
 ```c
-// kernel/bpf/btf.c
-struct btf {
-    void *data;                 // 原始 BTF 数据
-    struct btf_type **types;    // 类型数组（按 type_id 索引）
-    u32 *resolved_ids;          // 解析后的类型 ID
-    u32 *resolved_sizes;        // 解析后的类型大小
-    const char *strings;        // 字符串段
-    struct btf_header hdr;      // BTF 头
-    u32 nr_types;               // 类型总数
-    refcount_t refcnt;
-    u32 id;                     // BTF 对象的全局 ID
-    struct btf *base_btf;       // split BTF 的基础 BTF
-    bool kernel_btf;            // 是否为内核 BTF
-};
+// kernel/bpf/btf.c:709
+const struct btf_type *btf_type_by_id(const struct btf *btf, u32 type_id)
+{
+    while (type_id < btf->start_id)
+        btf = btf->base_btf;       // 支持 split BTF（模块 BTF 基于 vmlinux BTF）
+    type_id -= btf->start_id;
+    if (type_id >= btf->nr_types)
+        return NULL;
+    return btf->types[type_id];     // 直接数组索引，O(1) 查找
+}
 ```
 
-BTF 在验证器中的关键用途：
+验证器通过 `btf_struct_access()`（第 5113 行）利用 BTF 验证 BPF 程序对结构体字段的访问：
 
-1. **`PTR_TO_BTF_ID` 类型跟踪**：验证器跟踪指向内核对象的指针类型，确保只在合法偏移处访问合法字段
-2. **`check_ptr_to_btf_access()`**：验证通过 BTF 类型指针的结构体字段访问
-3. **`btf_struct_access()`**：根据 BTF 类型信息验证结构体成员访问的合法性
-4. **`check_attach_btf_id()`**：验证 fentry/fexit 程序的目标函数 BTF 类型
-5. **`check_pseudo_btf_id()`**：解析 `BPF_PSEUDO_BTF_ID`，将 BTF 变量 ID 转换为内核符号地址
+```c
+// kernel/bpf/btf.c:5113
+int btf_struct_access(struct bpf_verifier_log *log, const struct btf *btf,
+                      const struct btf_type *t, int off, int size,
+                      enum bpf_access_type atype, u32 *next_btf_id)
+{
+    do {
+        err = btf_struct_walk(log, btf, t, off, size, &id);
+        switch (err) {
+        case WALK_PTR:
+            *next_btf_id = id;
+            return PTR_TO_BTF_ID;    // 访问的是指针字段
+        case WALK_SCALAR:
+            return SCALAR_VALUE;      // 访问的是标量字段
+        case WALK_STRUCT:
+            t = btf_type_by_id(btf, id);  // 访问的是嵌套结构体，继续深入
+            off = 0;
+            break;
+        }
+    } while (t);
+}
+```
 
 ---
 
-## 四、CO-RE（Compile Once - Run Everywhere）
+### 3.4 第二步：CO-RE 是什么——"查字典改指令"的机制
 
-### 4.1 CO-RE 核心思想
+现在我们知道 BTF 提供了目标内核的"类型字典"，但还需要一个机制来：
 
-CO-RE 的核心思想是：**不硬编码字段偏移量，而是记录"要访问哪个结构体的哪个字段"这个语义意图，在 BPF 程序加载时再根据目标内核的 BTF 解析出实际偏移量。**
+1. **记录** BPF 程序中哪些指令依赖了结构体布局
+2. **查询**目标内核 BTF 得到正确的偏移量
+3. **修补**那些指令
 
-传统方式（硬编码偏移）：
+这就是 CO-RE 做的事。
+
+#### 3.4.1 Clang 做了什么——生成重定位记录
+
+当你在 BPF 程序中写：
 
 ```c
-// 编译时根据头文件确定 pid 在 task_struct 中的偏移量是 X
-int pid;
-bpf_probe_read(&pid, sizeof(pid), (void *)task + X);
-// 如果目标内核中 pid 的偏移量变了，程序就会读错数据
+#include "vmlinux.h"  // 从开发机的 BTF 生成的头文件
+#include <bpf/bpf_core_read.h>
+
+SEC("kprobe/do_fork")
+int trace_fork(struct pt_regs *ctx)
+{
+    struct task_struct *task = (void *)bpf_get_current_task();
+    pid_t pid = BPF_CORE_READ(task, pid);   // ← CO-RE 读取
+    return 0;
+}
 ```
 
-CO-RE 方式（记录访问意图）：
+`BPF_CORE_READ` 宏展开后（`tools/lib/bpf/bpf_core_read.h` 第 402 行）：
 
 ```c
-int pid;
-bpf_core_read(&pid, sizeof(pid), &task->pid);
-// Clang 不硬编码偏移量，而是记录："需要 task_struct 的 pid 字段的偏移"
-// 加载时 libbpf 查询目标内核 BTF，计算实际偏移并修补指令
+// tools/lib/bpf/bpf_core_read.h:402
+#define BPF_CORE_READ(src, a, ...) ({
+    ___type((src), a, ##__VA_ARGS__) __r;
+    BPF_CORE_READ_INTO(&__r, (src), a, ##__VA_ARGS__);
+    __r;
+})
 ```
 
-### 4.2 重定位记录格式
-
-CO-RE 重定位记录定义在 `tools/lib/bpf/relo_core.h`：
+底层的 `bpf_core_read` 宏（第 205 行）使用了 Clang 内建函数：
 
 ```c
-// tools/lib/bpf/relo_core.h
+// tools/lib/bpf/bpf_core_read.h:205
+#define bpf_core_read(dst, sz, src) \
+    bpf_probe_read_kernel(dst, sz, \
+        (const void *)__builtin_preserve_access_index(src))
+```
+
+**关键在 `__builtin_preserve_access_index()`**。这是 Clang 的一个特殊内建函数，它告诉 Clang：
+
+> "这个表达式 `&task->pid` 不要只生成一个固定偏移的指令，还要在 ELF 的 `.BTF.ext` section 中记录一条重定位信息，说明这条指令依赖于 `task_struct` 的 `pid` 字段偏移。"
+
+Clang 编译后，BPF ELF 文件中包含：
+
+```
+.text section:      BPF 字节码（其中 task->pid 的偏移用编译时的值填充，如 1224）
+.BTF section:       本地 BTF（编译时用的内核类型信息）
+.BTF.ext section:   CO-RE 重定位记录（哪条指令要修补、关联哪个类型的哪个字段）
+```
+
+#### 3.4.2 重定位记录长什么样
+
+每条 CO-RE 重定位记录的结构（`tools/lib/bpf/relo_core.h` 第 71 行）：
+
+```c
+// tools/lib/bpf/relo_core.h:71
 struct bpf_core_relo {
-    __u32   insn_off;       // 需要修补的 BPF 指令偏移（字节）
-    __u32   type_id;        // 根类型的 BTF type ID
-    __u32   access_str_off; // 访问路径字符串在 .BTF 字符串段中的偏移
-    enum bpf_core_relo_kind kind;  // 重定位种类
+    __u32   insn_off;       // 需要修补的 BPF 指令在程序中的字节偏移
+    __u32   type_id;        // 本地 BTF 中的类型 ID（如 task_struct = 123）
+    __u32   access_str_off; // 访问路径字符串在 BTF 字符串段中的偏移
+    enum bpf_core_relo_kind kind;  // 要什么信息（偏移？大小？是否存在？）
 };
 ```
 
-每条重定位记录表达的含义是：**在 `insn_off` 处的 BPF 指令需要根据 `type_id` 类型的 `access_str_off` 访问路径，提取 `kind` 指定的信息来修补指令操作数。**
+**`access_str_off` 指向的字符串** 编码了字段访问路径，例如：
 
-访问路径用冒号分隔的索引序列编码，源码中有详细的示例：
-
-```c
-// tools/lib/bpf/relo_core.h（注释）
-//   struct sample {
-//       int a;
-//       struct {
-//           int b[10];
-//       };
-//   };
-//
-//   struct sample *s = ...;
-//   int x = &s->a;     // encoded as "0:0" (a 是第 0 个字段)
-//   int y = &s->b[5];  // encoded as "0:1:0:5"
-//                       //   (匿名 struct 是第 1 个字段，
-//                       //    b 是匿名 struct 内的第 0 个字段，
-//                       //    访问第 5 个元素)
-//   int z = &s[10]->b; // encoded as "10:1" (指针当数组用)
+```
+"0:15"  →  第 0 层（解引用指针）的第 15 个成员（pid）
+"0:1:0:5" → 嵌套访问：第 1 个成员是匿名 struct，其中第 0 个字段是数组，取第 5 个元素
 ```
 
-重定位种类涵盖了字段和类型操作的所有维度：
+**`kind`** 说明要提取什么信息（第 10 行）：
 
 ```c
-// tools/lib/bpf/relo_core.h
+// tools/lib/bpf/relo_core.h:10
 enum bpf_core_relo_kind {
-    BPF_FIELD_BYTE_OFFSET = 0,  // 字段字节偏移
-    BPF_FIELD_BYTE_SIZE = 1,    // 字段字节大小
-    BPF_FIELD_EXISTS = 2,       // 字段是否存在于目标内核
+    BPF_FIELD_BYTE_OFFSET = 0,  // 要的是字段的字节偏移量
+    BPF_FIELD_BYTE_SIZE = 1,    // 要的是字段的字节大小
+    BPF_FIELD_EXISTS = 2,       // 只想知道目标内核有没有这个字段
     BPF_FIELD_SIGNED = 3,       // 字段是否有符号
-    BPF_FIELD_LSHIFT_U64 = 4,   // 位域的左移量
-    BPF_FIELD_RSHIFT_U64 = 5,   // 位域的右移量
-    BPF_TYPE_ID_LOCAL = 6,      // 类型在本地 BPF 对象中的 ID
-    BPF_TYPE_ID_TARGET = 7,     // 类型在目标内核中的 ID
-    BPF_TYPE_EXISTS = 8,        // 类型是否存在于目标内核
+    BPF_FIELD_LSHIFT_U64 = 4,   // 位域左移量
+    BPF_FIELD_RSHIFT_U64 = 5,   // 位域右移量
+    BPF_TYPE_ID_LOCAL = 6,      // 类型在本地 BTF 中的 ID
+    BPF_TYPE_ID_TARGET = 7,     // 类型在目标 BTF 中的 ID
+    BPF_TYPE_EXISTS = 8,        // 类型在目标内核中是否存在
     BPF_TYPE_SIZE = 9,          // 类型在目标内核中的大小
     BPF_ENUMVAL_EXISTS = 10,    // 枚举值是否存在
     BPF_ENUMVAL_VALUE = 11,     // 枚举值的整数值
 };
 ```
 
-Clang 通过一系列 `__builtin_preserve_*` 内建函数在编译时生成这些重定位记录，对应的用户空间宏定义在 `tools/lib/bpf/bpf_core_read.h`：
+#### 3.4.3 libbpf 加载时做了什么——完整重定位流程
+
+**CO-RE 重定位完全在用户空间由 libbpf 执行，内核不参与。** 内核收到的是已经修补好的指令。
+
+加载顺序在 `tools/lib/bpf/libbpf.c` 第 6905 行：
 
 ```c
-// tools/lib/bpf/bpf_core_read.h
-#define __CORE_RELO(src, field, info) \
-    __builtin_preserve_field_info((src)->field, BPF_FIELD_##info)
+// tools/lib/bpf/libbpf.c:6905
+err = bpf_object__probe_loading(obj);
+err = err ? : bpf_object__load_vmlinux_btf(obj, false);   // ← 加载目标内核 BTF
+err = err ? : bpf_object__resolve_externs(obj, obj->kconfig);
+err = err ? : bpf_object__sanitize_and_load_btf(obj);
+err = err ? : bpf_object__sanitize_maps(obj);
+err = err ? : bpf_object__init_kern_struct_ops_maps(obj);
+err = err ? : bpf_object__create_maps(obj);
+err = err ? : bpf_object__relocate(obj, ...);              // ← CO-RE 重定位在这里
 ```
 
-| CO-RE 宏/函数 | Clang 内建函数 | 用途 |
-|---------------|---------------|------|
-| `BPF_CORE_READ(s, field)` | `__builtin_preserve_access_index()` | 可重定位的字段读取 |
-| `bpf_core_field_exists(field)` | `__builtin_preserve_field_info(f, BPF_FIELD_EXISTS)` | 检查字段是否存在 |
-| `bpf_core_field_size(field)` | `__builtin_preserve_field_info(f, BPF_FIELD_BYTE_SIZE)` | 获取字段大小 |
-| `bpf_core_type_exists(type)` | `__builtin_preserve_type_info(t, BPF_TYPE_EXISTS)` | 检查类型是否存在 |
-| `bpf_core_type_size(type)` | `__builtin_preserve_type_info(t, BPF_TYPE_SIZE)` | 获取类型大小 |
-| `bpf_core_enum_value_exists(v)` | `__builtin_preserve_enum_value(v, BPF_ENUMVAL_EXISTS)` | 检查枚举值是否存在 |
+**第一步：加载目标内核的 BTF**
 
-### 4.3 libbpf 执行 CO-RE 重定位
-
-**CO-RE 重定位在用户空间由 libbpf 执行，内核不参与重定位过程。** 内核收到的是已经完成重定位的 BPF 程序。
-
-libbpf 的 CO-RE 重定位流程（`tools/lib/bpf/`）：
-
-```
-bpf_object__load()
-  └── bpf_object__relocate_core()          // libbpf.c
-        对 .BTF.ext 中的每条 CO-RE 记录:
-        ├── bpf_core_apply_relo()
-        │     ├── bpf_core_find_cands()    // 在目标 BTF 中查找匹配类型
-        │     └── bpf_core_apply_relo_insn()  // relo_core.c
-        │           // 根据目标类型信息修补 BPF 指令的 insn->imm
-        └── BPF_PROG_LOAD                 // 将已重定位的程序提交给内核
-```
-
-libbpf 加载目标内核 BTF 的方式（`tools/lib/bpf/btf.c`）：
+`btf__load_vmlinux_btf()`（`tools/lib/bpf/btf.c` 第 4456 行）按优先级从多个位置查找：
 
 ```c
-// tools/lib/bpf/btf.c
+// tools/lib/bpf/btf.c:4456
 struct btf *btf__load_vmlinux_btf(void)
 {
-    struct {
-        const char *path_fmt;
-        bool raw_btf;
-    } locations[] = {
-        // 优先从 sysfs 读取原始 BTF
-        { "/sys/kernel/btf/vmlinux", true },
-        // 回退到磁盘上的 vmlinux ELF 文件
-        { "/boot/vmlinux-%1$s" },
+    locations[] = {
+        { "/sys/kernel/btf/vmlinux", true },    // 优先：sysfs 原始 BTF
+        { "/boot/vmlinux-%1$s" },                // 回退：磁盘上的 vmlinux
         { "/lib/modules/%1$s/vmlinux-%1$s" },
         { "/lib/modules/%1$s/build/vmlinux" },
-        { "/usr/lib/modules/%1$s/kernel/vmlinux" },
-        { "/usr/lib/debug/boot/vmlinux-%1$s" },
-        { "/usr/lib/debug/boot/vmlinux-%1$s.debug" },
-        { "/usr/lib/debug/lib/modules/%1$s/vmlinux" },
+        // ...
     };
 
-    uname(&buf);
+    uname(&buf);  // 获取当前内核版本
     for (i = 0; i < ARRAY_SIZE(locations); i++) {
         snprintf(path, PATH_MAX, locations[i].path_fmt, buf.release);
-        if (access(path, R_OK))
-            continue;
         if (locations[i].raw_btf)
-            btf = btf__parse_raw(path);   // 直接解析原始 BTF
+            btf = btf__parse_raw(path);     // 解析原始 BTF 二进制
         else
-            btf = btf__parse_elf(path, NULL);  // 从 ELF 中提取 BTF
-        if (!err)
-            return btf;
+            btf = btf__parse_elf(path, NULL); // 从 ELF 提取 BTF
+        if (!err) return btf;
     }
-    return libbpf_err_ptr(-ESRCH);
 }
 ```
 
-**重定位示例**：假设 BPF 程序要读取 `task_struct->pid`，编译时 `pid` 的偏移是 1224（本地内核），但目标内核中 `pid` 偏移变成了 1240。
+**第二步：执行 CO-RE 重定位**
 
-1. Clang 编译时生成一条重定位记录：`{insn_off=42, type_id=123(task_struct), access_str="0:15"(pid字段), kind=BPF_FIELD_BYTE_OFFSET}`
-2. BPF 指令中 `insn[42].imm = 1224`（本地偏移量，作为默认值）
-3. libbpf 加载时读取目标内核的 `/sys/kernel/btf/vmlinux`
-4. 在目标 BTF 中找到 `task_struct`，查到 `pid` 字段的偏移是 1240
-5. 修补 `insn[42].imm = 1240`
-6. 将修补后的程序通过 `BPF_PROG_LOAD` 提交给内核
+`bpf_object__relocate_core()`（第 5185 行）遍历所有 CO-RE 记录：
+
+```c
+// tools/lib/bpf/libbpf.c:5185
+bpf_object__relocate_core(struct bpf_object *obj, const char *targ_btf_path)
+{
+    // 遍历 .BTF.ext 中的每条 CO-RE 重定位记录
+    for_each_btf_ext_sec(seg, sec) {
+        err = bpf_core_apply_relo(prog, rec, i, obj->btf, cand_cache);
+    }
+}
+```
+
+**第三步：单条重定位的处理**
+
+核心函数 `bpf_core_apply_relo_insn()`（`tools/lib/bpf/relo_core.c` 第 1145 行）的完整流程：
+
+```c
+// tools/lib/bpf/relo_core.c:1145
+int bpf_core_apply_relo_insn(const char *prog_name, struct bpf_insn *insn,
+                             int insn_idx,
+                             const struct bpf_core_relo *relo,
+                             int relo_idx,
+                             const struct btf *local_btf,
+                             struct bpf_core_cand_list *cands)
+{
+    // ① 从本地 BTF 获取类型名
+    local_id = relo->type_id;
+    local_type = btf__type_by_id(local_btf, local_id);
+    local_name = btf__name_by_offset(local_btf, local_type->name_off);
+    // local_name = "task_struct"
+
+    // ② 解析访问路径字符串
+    spec_str = btf__name_by_offset(local_btf, relo->access_str_off);
+    // spec_str = "0:15" (第 15 个成员)
+    err = bpf_core_parse_spec(local_btf, local_id, spec_str,
+                              relo->kind, &local_spec);
+    // local_spec.bit_offset = 1224*8 = 9792（编译时的偏移）
+
+    // ③ 在目标内核 BTF 中查找匹配的类型
+    for (i = 0; i < cands->len; i++) {
+        // 对每个候选类型（名字匹配 "task_struct" 的类型）
+        err = bpf_core_spec_match(&local_spec,
+                                  cands->cands[i].btf,    // 目标 BTF
+                                  cands->cands[i].id,      // 目标类型 ID
+                                  &cand_spec);
+        // bpf_core_spec_match 做的事：
+        //   在目标 BTF 的 task_struct 中按名字找 "pid" 字段
+        //   找到后记录 cand_spec.bit_offset = 1296*8 = 10368
+
+        // ④ 计算原始值和新值
+        err = bpf_core_calc_relo(prog_name, relo, relo_idx,
+                                 &local_spec, &cand_spec, &cand_res);
+        // cand_res.orig_val = 1224  (本地偏移)
+        // cand_res.new_val  = 1296  (目标偏移)
+    }
+
+patch_insn:
+    // ⑤ 修补 BPF 指令
+    return bpf_core_patch_insn(prog_name, insn, insn_idx,
+                               relo, relo_idx, &targ_res);
+}
+```
+
+**第四步：修补指令的具体细节**
+
+`bpf_core_patch_insn()`（第 919 行）根据指令类型修补不同的字段：
+
+```c
+// tools/lib/bpf/relo_core.c:919
+static int bpf_core_patch_insn(const char *prog_name, struct bpf_insn *insn,
+                               int insn_idx, const struct bpf_core_relo *relo,
+                               int relo_idx, const struct bpf_core_relo_res *res)
+{
+    orig_val = res->orig_val;   // 1224（编译时偏移）
+    new_val = res->new_val;     // 1296（目标内核偏移）
+
+    switch (BPF_CLASS(insn->code)) {
+    case BPF_ALU:
+    case BPF_ALU64:
+        // 算术指令：rX += <imm>
+        // 修补 insn->imm
+        insn->imm = new_val;    // 1224 → 1296
+        break;
+
+    case BPF_LDX:
+    case BPF_ST:
+    case BPF_STX:
+        // 内存访问指令：rX = *(u32 *)(rY + <off>)
+        // 修补 insn->off
+        insn->off = new_val;    // 1224 → 1296
+        // 如果字段大小也变了（如 u32 → u64），还要修补访问宽度
+        if (res->new_sz != res->orig_sz) {
+            insn->code = BPF_MODE(insn->code)
+                       | insn_bytes_to_bpf_size(res->new_sz)
+                       | BPF_CLASS(insn->code);
+        }
+        break;
+
+    case BPF_LD:
+        // 64 位立即数加载：rX = <imm64>
+        insn[0].imm = new_val;
+        insn[1].imm = 0;
+        break;
+    }
+}
+```
+
+如果目标内核中**找不到该字段**（`BPF_FIELD_EXISTS` 返回 0），CO-RE 会"毒化"该指令（第 864 行）：
+
+```c
+// tools/lib/bpf/relo_core.c:864
+static void bpf_core_poison_insn(...)
+{
+    insn->code = BPF_JMP | BPF_CALL;
+    insn->imm = 195896080;  // 0xbad2310 = "bad relo"
+    // 如果这条指令可达，验证器会报错 "invalid func unknown#195896080"
+    // 如果不可达（被 if 条件跳过），程序正常加载
+}
+```
+
+这使得 BPF 程序可以写防御性代码：
+
+```c
+if (bpf_core_field_exists(task->new_field_in_5_15)) {
+    // 只在 5.15+ 内核上执行
+    val = BPF_CORE_READ(task, new_field_in_5_15);
+} else {
+    // 旧内核的回退路径
+    val = 0;
+}
+```
+
+#### 3.4.4 类型匹配是怎么做的
+
+`bpf_core_spec_match()`（`relo_core.c` 第 447 行）在目标 BTF 中匹配本地类型的核心逻辑：
+
+1. **按名字匹配**：在目标 BTF 中搜索所有名为 `"task_struct"` 的 `STRUCT` 类型
+2. **按访问路径匹配**：按照 `"0:15"` 路径，在目标 `task_struct` 中**按字段名**逐级查找
+   - 先取本地类型的第 15 个成员，得到名字 `"pid"`
+   - 在目标 `task_struct` 的所有成员中搜索名为 `"pid"` 的字段
+   - 找到后记录目标的 `bit_offset`
+3. **兼容性检查**：`bpf_core_fields_are_compat()`（第 301 行）确保本地和目标字段的类型兼容（都是 int、都是指针等）
+
+**注意：匹配用的是字段名而不是字段序号。** 如果内核在 `pid` 前面添加了新字段导致 `pid` 从第 15 个变成第 20 个，CO-RE 照样能找到它，因为它搜的是 `"pid"` 这个名字。
+
+---
+
+### 3.5 完整端到端流程图
+
+```
+ ┌─────────────────────── 开发机（编译一次）─────────────────────────┐
+ │                                                                  │
+ │   BPF C 源码:                                                     │
+ │     pid = BPF_CORE_READ(task, pid);                               │
+ │              │                                                    │
+ │              ▼                                                    │
+ │   Clang + __builtin_preserve_access_index()                       │
+ │              │                                                    │
+ │              ▼ 产生                                                │
+ │   BPF ELF 文件:                                                   │
+ │   ┌──────────────────────────────────────────────────────────┐    │
+ │   │ .text:     r1 = *(u32 *)(r6 + 1224)  ← 编译时偏移       │    │
+ │   │ .BTF:      本地类型 {task_struct: pid at offset 1224}    │    │
+ │   │ .BTF.ext:  CO-RE relo {insn=42, type=task_struct,        │    │
+ │   │             access="0:15"(pid), kind=BYTE_OFFSET}        │    │
+ │   └──────────────────────────────────────────────────────────┘    │
+ │                                                                  │
+ └──────────────────────────┬───────────────────────────────────────┘
+                            │ 分发到目标机
+                            ▼
+ ┌─────────────────────── 目标机（运行时）─────────────────────────┐
+ │                                                                  │
+ │   Linux Kernel 内嵌 BTF:                                          │
+ │     /sys/kernel/btf/vmlinux                                       │
+ │     → task_struct: pid at offset 1296  ← 目标内核的偏移不同！      │
+ │                                                                  │
+ │   libbpf 加载过程:                                                │
+ │                                                                  │
+ │   ① bpf_object__load_vmlinux_btf()                               │
+ │      读取 /sys/kernel/btf/vmlinux → 得到目标 BTF                  │
+ │                                                                  │
+ │   ② bpf_object__relocate_core()                                  │
+ │      遍历 .BTF.ext 中的每条 CO-RE 记录                             │
+ │                                                                  │
+ │   ③ bpf_core_apply_relo_insn():                                  │
+ │      ├─ 解析本地 spec: task_struct 第 15 个成员 "pid"              │
+ │      ├─ 目标 BTF 搜索: task_struct 中名为 "pid" 的成员             │
+ │      ├─ 找到: pid at offset 1296（目标偏移）                       │
+ │      └─ 计算: orig=1224, new=1296                                 │
+ │                                                                  │
+ │   ④ bpf_core_patch_insn():                                       │
+ │      insn->off = 1296  （修补指令：1224 → 1296）                   │
+ │                                                                  │
+ │   ⑤ 修补后的指令:                                                 │
+ │      r1 = *(u32 *)(r6 + 1296)  ← 正确的目标偏移！                 │
+ │                                                                  │
+ │   ⑥ bpf(BPF_PROG_LOAD, ...) → 内核验证 + JIT → 正确执行           │
+ │                                                                  │
+ └──────────────────────────────────────────────────────────────────┘
+```
+
+### 3.6 BTF 与 CO-RE 的关系总结
+
+| 概念 | 角色 | 类比 |
+|------|------|------|
+| **BTF** | 类型信息数据库 | 字典 |
+| **本地 BTF**（.BTF section） | 编译时的内核类型信息 | 你查过的旧版字典 |
+| **目标 BTF**（/sys/kernel/btf/vmlinux） | 运行时内核的类型信息 | 目标环境的新版字典 |
+| **CO-RE 重定位记录**（.BTF.ext） | "哪条指令要查什么词" | 标注了需要查字典的位置 |
+| **libbpf CO-RE 引擎**（relo_core.c） | 查字典 + 改指令 | 翻译员 |
+| **Clang 内建函数** | 编译时标记需要重定位的访问 | 在文本中划出需要翻译的词 |
+
+**核心关系**：
+
+1. **没有 BTF，CO-RE 无法工作** — CO-RE 需要查询目标内核的类型信息来计算正确偏移
+2. **没有 CO-RE，BTF 只是数据** — BTF 仅提供类型描述，不会自动修改 BPF 指令
+3. **两者配合** — Clang 编译时记录访问意图（CO-RE 记录） + BTF 提供目标信息 → libbpf 在加载时完成指令修补
+
+---
+
+## 四、BTF 的其他用途（不只是 CO-RE）
+
+BTF 除了服务 CO-RE 外，在内核中还有重要用途：
+
+### 4.1 验证器类型安全检查
+
+BPF 验证器利用 BTF 跟踪 `PTR_TO_BTF_ID` 类型的指针，确保 BPF 程序只能在合法偏移处访问合法字段：
+
+```c
+// kernel/bpf/btf.c:5113
+int btf_struct_access(log, btf, t, off, size, atype, next_btf_id)
+// 验证 BPF 程序对 off 偏移的访问是否合法
+// btf_struct_walk() 沿着 BTF 类型信息检查：
+//   - off 是否落在某个合法成员的范围内
+//   - 访问大小是否匹配成员类型
+//   - 如果成员是指针，返回 PTR_TO_BTF_ID 以便继续跟踪
+```
+
+### 4.2 fentry/fexit 函数参数描述
+
+`BPF_PROG_TYPE_TRACING` 程序通过 BTF 获取目标内核函数的参数信息，实现**类型安全**的参数访问（不需要像 kprobe 那样手动从 `pt_regs` 中提取）。
+
+### 4.3 BPF map 的 pretty-print
+
+`bpftool map dump` 命令利用 BTF 将 map 的 key/value 以人类可读格式显示，而非原始字节。
+
+### 4.4 生成 vmlinux.h
+
+`bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h` 从 BTF 反向生成 C 头文件，供 BPF 程序使用。这使得开发者不需要安装内核头文件包。
 
 ---
 
@@ -1091,21 +1365,32 @@ struct btf *btf__load_vmlinux_btf(void)
 
 ```
    开发机 (编译一次)                           目标机 (直接运行)
- ┌─────────────────────┐               ┌──────────────────────────────────┐
- │                     │               │           Linux Kernel            │
- │  BPF C 源码         │               │  ┌────────────────────────────┐  │
- │    + CO-RE 宏       │               │  │ 嵌入的 vmlinux BTF        │  │
- │         │           │               │  │ (__start_BTF ~ __stop_BTF) │  │
- │    Clang/LLVM       │               │  └──────────┬─────────────────┘  │
- │         │           │               │             │                    │
- │         ▼           │   ──────→     │             ▼ /sys/kernel/btf/   │
- │  BPF ELF 文件       │   分发到      │               vmlinux            │
- │  ├─ .text (字节码)  │   目标机      │  ┌────────────────────────────┐  │
- │  ├─ .BTF (本地类型) │               │  │      libbpf               │  │
- │  └─ .BTF.ext        │               │  │  1. 读取目标内核 BTF       │  │
- │    (CO-RE重定位记录) │               │  │  2. 对比本地/目标 BTF      │  │
- │                     │               │  │  3. 修补 BPF 指令偏移量    │  │
- └─────────────────────┘               │  │  4. BPF_PROG_LOAD         │  │
+ ┌──────────────────────┐              ┌──────────────────────────────────┐
+ │                      │              │           Linux Kernel            │
+ │  BPF C 源码          │              │  ┌────────────────────────────┐  │
+ │  + CO-RE 宏          │              │  │ 嵌入的 vmlinux BTF        │  │
+ │  + vmlinux.h         │              │  │ (__start_BTF ~ __stop_BTF) │  │
+ │         │            │              │  └──────────┬─────────────────┘  │
+ │    Clang/LLVM        │              │             │                    │
+ │  __builtin_preserve  │              │             ▼ /sys/kernel/btf/   │
+ │  _access_index()     │   ──────→    │               vmlinux            │
+ │         │            │   分发到     │                                   │
+ │         ▼            │   目标机     │  ┌────────────────────────────┐  │
+ │  BPF ELF 文件        │              │  │      libbpf               │  │
+ │  ├ .text:            │              │  │                            │  │
+ │  │  rX=*(rY+1224)    │              │  │  1. 读取目标 BTF           │  │
+ │  │  (编译时偏移)     │              │  │     btf__load_vmlinux_btf()│  │
+ │  ├ .BTF:             │              │  │                            │  │
+ │  │  本地类型信息     │              │  │  2. CO-RE 重定位           │  │
+ │  └ .BTF.ext:         │              │  │     bpf_core_apply_relo_   │  │
+ │    CO-RE 记录:       │              │  │     insn(): 按名字匹配     │  │
+ │    "task_struct.pid   │              │  │     字段，计算新偏移       │  │
+ │     → insn #42"      │              │  │                            │  │
+ │                      │              │  │  3. 修补指令               │  │
+ └──────────────────────┘              │  │     bpf_core_patch_insn(): │  │
+                                       │  │     1224 → 1296            │  │
+                                       │  │                            │  │
+                                       │  │  4. BPF_PROG_LOAD         │  │
                                        │  └──────────┬─────────────────┘  │
                                        │             ▼                    │
                                        │  ┌────────────────────────────┐  │

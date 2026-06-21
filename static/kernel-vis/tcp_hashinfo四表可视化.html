@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>tcp_hashinfo 4 张哈希表可视化</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #fafbfc; color: #24292e; padding: 24px; line-height: 1.5;
+  }
+  h1 { font-size: 22px; margin-bottom: 6px; }
+  .sub { color: #586069; font-size: 13px; margin-bottom: 24px; }
+  .legend {
+    display: flex; gap: 24px; align-items: center; flex-wrap: wrap;
+    padding: 10px 16px; background: #fff; border: 1px solid #e1e4e8; border-radius: 6px;
+    font-size: 12px; color: #586069; margin-bottom: 20px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-box { width: 16px; height: 12px; border: 1px solid; border-radius: 2px; }
+  .legend-line { width: 24px; height: 0; border-top: 2px solid; }
+
+  .tabs {
+    display: flex; gap: 2px; margin-bottom: 0;
+    border-bottom: 1px solid #e1e4e8;
+  }
+  .tab {
+    padding: 10px 18px; background: #f6f8fa; border: 1px solid #e1e4e8;
+    border-bottom: none; border-radius: 6px 6px 0 0; cursor: pointer;
+    font-size: 14px; font-weight: 500; color: #586069;
+    transition: all 0.15s;
+  }
+  .tab:hover { background: #fff; color: #24292e; }
+  .tab.active {
+    background: #fff; color: #0366d6; border-bottom: 2px solid #fff;
+    margin-bottom: -1px; font-weight: 600;
+  }
+  .panel {
+    display: none; background: #fff; border: 1px solid #e1e4e8;
+    border-top: none; border-radius: 0 0 6px 6px; padding: 24px;
+  }
+  .panel.active { display: block; }
+  .panel h2 { font-size: 18px; margin-bottom: 8px; color: #24292e; }
+  .panel .desc { color: #586069; font-size: 13px; margin-bottom: 18px; }
+  .panel .meta {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px; margin-bottom: 20px; font-size: 12px;
+  }
+  .panel .meta div {
+    background: #f6f8fa; padding: 8px 10px; border-radius: 4px;
+    border-left: 3px solid #0366d6;
+  }
+  .panel .meta strong { color: #24292e; }
+
+  .diagram {
+    display: flex; justify-content: center; padding: 16px 0;
+    overflow-x: auto;
+  }
+  .note {
+    margin-top: 16px; padding: 10px 14px; background: #fffbdd;
+    border-left: 3px solid #f9c513; font-size: 12px; color: #735c0f;
+    border-radius: 2px;
+  }
+  .note code { background: rgba(27,31,35,0.05); padding: 1px 4px; border-radius: 3px; }
+
+  .src-ref {
+    margin-top: 16px; padding: 10px 14px; background: #f1f8ff;
+    border-left: 3px solid #0366d6; font-size: 12px; color: #032b5c;
+    border-radius: 2px;
+  }
+  .src-ref code { background: rgba(27,31,35,0.05); padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<h1>tcp_hashinfo 4 张哈希表存储结构</h1>
+<div class="sub">Linux 5.15.78 · <code>struct inet_hashinfo</code>（<code>include/net/inet_hashtables.h:294-340</code>）· 点击 tab 切换</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-box" style="background:#e3f2fd;border-color:#1976d2;"></div>桶数组元素</div>
+  <div class="legend-item"><div class="legend-box" style="background:#fff3e0;border-color:#f57c00;"></div>链表节点（socket / timewait）</div>
+  <div class="legend-item"><div class="legend-box" style="background:#e8f5e9;border-color:#388e3c;"></div>bind_bucket（中间容器）</div>
+  <div class="legend-item"><div class="legend-box" style="background:#fce4ec;border-color:#c2185b;"></div>锁</div>
+  <div class="legend-item"><div class="legend-line" style="border-color:#586069;"></div>next 指针</div>
+  <div class="legend-item"><div class="legend-line" style="border-color:#d73a49;border-style:dashed;"></div>nulls 哨兵</div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-target="ehash">① ehash（已建立连接）</div>
+  <div class="tab" data-target="bhash">② bhash（端口绑定）</div>
+  <div class="tab" data-target="lhash2">③ lhash2（监听 IP+端口）</div>
+  <div class="tab" data-target="lhash">④ listening_hash（监听端口）</div>
+  <div class="tab" data-target="compare">⑤ 对比总结</div>
+</div>
+
+<!-- ============ ehash ============ -->
+<div class="panel active" id="ehash">
+  <h2>① ehash — 已建立连接查找表</h2>
+  <div class="desc">按 <strong>四元组（本地 IP:端口 + 远端 IP:端口）</strong>哈希。数据包到达时，O(1) 找到对应的 socket。存 <code>struct sock</code>（活跃连接）和 <code>inet_timewait_sock</code>（TIME_WAIT 轻量 socket），两者都通过 <code>sock_common</code> 的 <code>skc_nulls_node</code> 链入。</div>
+
+  <div class="meta">
+    <div><strong>桶数组：</strong><code>*ehash</code> 动态分配</div>
+    <div><strong>桶数：</strong>2 的幂，由 <code>ehash_mask+1</code> 决定</div>
+    <div><strong>桶类型：</strong><code>inet_ehash_bucket</code></div>
+    <div><strong>桶字段：</strong>仅 <code>nulls_head</code></div>
+    <div><strong>哈希函数：</strong><code>inet_ehashfn()</code>（Jenkins）</div>
+    <div><strong>锁：</strong><code>*ehash_locks</code> 分离锁数组，多桶共享一锁</div>
+  </div>
+
+  <div class="diagram">
+    <svg width="760" height="400" viewBox="0 0 760 400" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="11">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6 Z" fill="#586069"/>
+        </marker>
+        <marker id="arr-nulls" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6 Z" fill="#d73a49"/>
+        </marker>
+      </defs>
+
+      <!-- 桶数组标题 -->
+      <text x="20" y="30" font-size="13" font-weight="bold" fill="#24292e">*ehash 数组（tcp_hashinfo.ehash）</text>
+      <text x="20" y="46" font-size="10" fill="#586069">桶索引 = inet_ehashfn(四元组) &amp; ehash_mask</text>
+
+      <!-- 数组框 -->
+      <rect x="20" y="60" width="150" height="320" fill="#f6f8fa" stroke="#d1d5da" rx="4"/>
+      <text x="95" y="78" text-anchor="middle" font-weight="bold" fill="#24292e">inet_ehash_bucket[]</text>
+
+      <!-- 桶 0 -->
+      <rect x="35" y="90" width="120" height="40" fill="#e3f2fd" stroke="#1976d2" rx="3"/>
+      <text x="95" y="107" text-anchor="middle" font-weight="bold">[0]</text>
+      <text x="95" y="122" text-anchor="middle" fill="#586069">nulls_head</text>
+
+      <!-- 桶 1 -->
+      <rect x="35" y="140" width="120" height="40" fill="#e3f2fd" stroke="#1976d2" rx="3"/>
+      <text x="95" y="157" text-anchor="middle" font-weight="bold">[1]</text>
+      <text x="95" y="172" text-anchor="middle" fill="#586069">nulls_head</text>
+
+      <!-- 桶 2 -->
+      <rect x="35" y="190" width="120" height="40" fill="#e3f2fd" stroke="#1976d2" rx="3"/>
+      <text x="95" y="207" text-anchor="middle" font-weight="bold">[2]</text>
+      <text x="95" y="222" text-anchor="middle" fill="#586069">nulls_head</text>
+
+      <!-- 省略 -->
+      <text x="95" y="258" text-anchor="middle" fill="#959da5">⋮</text>
+
+      <!-- 桶 N-1 -->
+      <rect x="35" y="275" width="120" height="40" fill="#e3f2fd" stroke="#1976d2" rx="3"/>
+      <text x="95" y="292" text-anchor="middle" font-weight="bold">[N-1]</text>
+      <text x="95" y="307" text-anchor="middle" fill="#586069">nulls_head</text>
+
+      <text x="95" y="340" text-anchor="middle" font-size="10" fill="#586069">N = ehash_mask + 1</text>
+
+      <!-- 桶 0 的链表 -->
+      <line x1="155" y1="110" x2="210" y2="110" stroke="#586069" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- socket 1 -->
+      <rect x="215" y="85" width="155" height="50" fill="#fff3e0" stroke="#f57c00" rx="3"/>
+      <text x="292" y="102" text-anchor="middle" font-weight="bold">struct sock</text>
+      <text x="292" y="117" text-anchor="middle" fill="#586069" font-size="10">ESTABLISHED</text>
+      <text x="292" y="130" text-anchor="middle" fill="#586069" font-size="10">sk_nulls_node →</text>
+      <line x1="370" y1="110" x2="425" y2="110" stroke="#586069" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- timewait -->
+      <rect x="430" y="85" width="160" height="50" fill="#fff3e0" stroke="#f57c00" rx="3"/>
+      <text x="510" y="102" text-anchor="middle" font-weight="bold">inet_timewait_sock</text>
+      <text x="510" y="117" text-anchor="middle" fill="#586069" font-size="10">TIME_WAIT</text>
+      <text x="510" y="130" text-anchor="middle" fill="#586069" font-size="10">tw_node →</text>
+      <line x1="590" y1="110" x2="645" y2="110" stroke="#d73a49" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr-nulls)"/>
+
+      <!-- nulls 哨兵 -->
+      <rect x="650" y="95" width="90" height="30" fill="#fff" stroke="#d73a49" stroke-dasharray="4,3" rx="3"/>
+      <text x="695" y="113" text-anchor="middle" fill="#d73a49" font-weight="bold">NULLS(0)</text>
+
+      <!-- 桶 1 空链表 -->
+      <line x1="155" y1="160" x2="645" y2="160" stroke="#d73a49" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr-nulls)"/>
+      <rect x="650" y="145" width="90" height="30" fill="#fff" stroke="#d73a49" stroke-dasharray="4,3" rx="3"/>
+      <text x="695" y="163" text-anchor="middle" fill="#d73a49" font-weight="bold">NULLS(1)</text>
+
+      <!-- 桶 2 单 socket -->
+      <line x1="155" y1="210" x2="210" y2="210" stroke="#586069" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="215" y="185" width="155" height="50" fill="#fff3e0" stroke="#f57c00" rx="3"/>
+      <text x="292" y="202" text-anchor="middle" font-weight="bold">struct sock</text>
+      <text x="292" y="217" text-anchor="middle" fill="#586069" font-size="10">SYN_SENT</text>
+      <text x="292" y="230" text-anchor="middle" fill="#586069" font-size="10">sk_nulls_node →</text>
+      <line x1="370" y1="210" x2="645" y2="210" stroke="#d73a49" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr-nulls)"/>
+      <rect x="650" y="195" width="90" height="30" fill="#fff" stroke="#d73a49" stroke-dasharray="4,3" rx="3"/>
+      <text x="695" y="213" text-anchor="middle" fill="#d73a49" font-weight="bold">NULLS(2)</text>
+
+      <!-- 桶 N-1 空 -->
+      <line x1="155" y1="295" x2="645" y2="295" stroke="#d73a49" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr-nulls)"/>
+      <rect x="650" y="280" width="90" height="30" fill="#fff" stroke="#d73a49" stroke-dasharray="4,3" rx="3"/>
+      <text x="695" y="298" text-anchor="middle" fill="#d73a49" font-weight="bold">NULLS(N-1)</text>
+
+      <!-- nulls 说明 -->
+      <text x="430" y="360" font-size="11" fill="#d73a49" font-style="italic">NULLS(k) 是编码了桶号 k 的哨兵，不是 NULL</text>
+      <text x="430" y="376" font-size="11" fill="#586069">RCU 遍历时若尾桶号与预期不符 → 节点被迁移，需重查</text>
+    </svg>
+  </div>
+
+  <div class="note"><strong>为什么用 nulls 而不是普通 NULL 结尾？</strong> RCU 无锁遍历时，socket 可能在中途被迁移到另一个桶。nulls 尾值编码了桶号，遍历完检查"尾桶号 == 当前桶号"可发现这种迁移并触发重查。源码：<code>include/net/inet_hashtables.h:191</code>。</div>
+  <div class="src-ref"><strong>源码定位：</strong>桶类型 <code>inet_ehash_bucket</code>（<code>inet_hashtables.h:38-40</code>），数组字段 <code>*ehash</code>（<code>inet_hashtables.h:301</code>），分离锁 <code>*ehash_locks</code>（<code>inet_hashtables.h:303</code>）。</div>
+</div>
+
+<!-- ============ bhash ============ -->
+<div class="panel" id="bhash">
+  <h2>② bhash — 端口绑定哈希表</h2>
+  <div class="desc">按 <strong>本地端口</strong>哈希。<strong>双层链表</strong>：外层桶挂 <code>inet_bind_bucket</code>（每端口一 bucket），bucket 内的 <code>owners</code> 挂所有使用该端口的 socket。用于 <code>bind()</code> / <code>connect()</code> 时的端口冲突检查。</div>
+
+  <div class="meta">
+    <div><strong>桶数组：</strong><code>*bhash</code> 动态分配</div>
+    <div><strong>桶数：</strong>2 的幂，由 <code>bhash_size</code> 决定</div>
+    <div><strong>桶类型：</strong><code>inet_bind_hashbucket</code></div>
+    <div><strong>桶字段：</strong><code>spinlock + chain</code></div>
+    <div><strong>哈希函数：</strong><code>inet_bhashfn(net, port, size)</code></div>
+    <div><strong>中间层：</strong><code>inet_bind_bucket</code> slab 分配</div>
+  </div>
+
+  <div class="diagram">
+    <svg width="900" height="520" viewBox="0 0 900 520" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="11">
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6 Z" fill="#586069"/>
+        </marker>
+        <marker id="arr3" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6 Z" fill="#388e3c"/>
+        </marker>
+      </defs>
+
+      <text x="20" y="30" font-size="13" font-weight="bold" fill="#24292e">*bhash 数组（tcp_hashinfo.bhash）</text>
+      <text x="20" y="46" font-size="10" fill="#586069">桶索引 = (port + net_hash_mix(net)) &amp; (bhash_size - 1)</text>
+
+      <!-- 桶数组框 -->
+      <rect x="20" y="60" width="160" height="440" fill="#f6f8fa" stroke="#d1d5da" rx="4"/>
+      <text x="100" y="78" text-anchor="middle" font-weight="bold">inet_bind_hashbucket[]</text>
+
+      <!-- 桶 0 -->
+      <rect x="35" y="90" width="130" height="70" fill="#e3f2fd" stroke="#1976d2" rx="3"/>
+      <text x="100" y="107" text-anchor="middle" font-weight="bold">[0]</text>
+      <text x="100" y="122" text-anchor="middle" fill="#c2185b" font-size="10">🔒 lock</text>
+      <text x="100" y="137" text-anchor="middle" fill="#586069" font-size="10">chain (hlist_head)</text>
+      <text x="100" y="152" text-anchor="middle" fill="#586069" font-size="9">↓</text>
+
+      <!-- 桶 1 -->
+      <rect x="35" y="180" width="130" height="70" fill="#e3f2fd" stroke="#1976d2" rx="3"/>
+      <text x="100" y="197" text-anchor="middle" font-weight="bold">[1]</text>
+      <text x="100" y="212" text-anchor="middle" fill="#c2185b" font-size="10">🔒 lock</text>
+      <text x="100" y="227" text-anchor="middle" fill="#586069" font-size="10">chain</text>
+      <text x="100" y="242" text-anchor="middle" fill="#586069" font-size="9">↓</text>
+
+      <text x="100" y="278" text-anchor="middle" fill="#959da5">⋮</text>
+
+      <rect x="35" y="295" width="130" height="70" fill="#e3f2fd" stroke="#1976d2" rx="3"/>
+      <text x="100" y="312" text-anchor="middle" font-weight="bold">[K-1]</text>
+      <text x="100" y="327" text-anchor="middle" fill="#c2185b" font-size="10">🔒 lock</text>
+      <text x="100" y="342" text-anchor="middle" fill="#586069" font-size="10">chain</text>
+
+      <!-- 桶 0 的外层链 -->
+      <line x1="165" y1="140" x2="210" y2="140" stroke="#586069" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+      <!-- bind_bucket 1 (port=80) -->
+      <rect x="215" y="95" width="175" height="100" fill="#e8f5e9" stroke="#388e3c" stroke-width="1.5" rx="3"/>
+      <text x="302" y="112" text-anchor="middle" font-weight="bold">inet_bind_bucket</text>
+      <text x="302" y="127" text-anchor="middle" fill="#586069" font-size="10">port = 80</text>
+      <text x="302" y="142" text-anchor="middle" fill="#586069" font-size="10">fastreuse = 1 (REUSEADDR)</text>
+      <text x="302" y="157" text-anchor="middle" fill="#586069" font-size="10">fastuid / fastreuseport / l3mdev</text>
+      <text x="230" y="175" font-size="9" fill="#388e3c">node →</text>
+      <text x="302" y="187" text-anchor="middle" fill="#586069" font-size="10">owners (hlist_head) ↓</text>
+      <line x1="390" y1="140" x2="435" y2="140" stroke="#388e3c" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <!-- bind_bucket 2 (port=8192, hash 冲突同桶) -->
+      <line x1="302" y1="195" x2="302" y2="215" stroke="#388e3c" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <rect x="215" y="215" width="175" height="90" fill="#e8f5e9" stroke="#388e3c" stroke-width="1.5" rx="3"/>
+      <text x="302" y="232" text-anchor="middle" font-weight="bold">inet_bind_bucket</text>
+      <text x="302" y="247" text-anchor="middle" fill="#586069" font-size="10">port = 8192</text>
+      <text x="302" y="262" text-anchor="middle" fill="#586069" font-size="10">fastreuse = -1 (connect 专用)</text>
+      <text x="302" y="277" text-anchor="middle" fill="#586069" font-size="10">node → (下一个 tb)</text>
+      <text x="302" y="295" text-anchor="middle" fill="#586069" font-size="10">owners ↓</text>
+
+      <text x="295" y="322" text-anchor="middle" fill="#959da5" font-size="10">(外层链结束)</text>
+
+      <!-- port=80 的 owners 链 -->
+      <line x1="440" y1="140" x2="475" y2="140" stroke="#586069" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+      <rect x="480" y="100" width="140" height="70" fill="#fff3e0" stroke="#f57c00" rx="3"/>
+      <text x="550" y="117" text-anchor="middle" font-weight="bold">sock A</text>
+      <text x="550" y="132" text-anchor="middle" fill="#586069" font-size="10">LISTEN 0.0.0.0:80</text>
+      <text x="550" y="147" text-anchor="middle" fill="#586069" font-size="10">sk_reuse = 1</text>
+      <text x="550" y="162" text-anchor="middle" fill="#586069" font-size="9">sk_bind_node →</text>
+      <line x1="620" y1="140" x2="655" y2="140" stroke="#586069" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+      <rect x="660" y="100" width="140" height="70" fill="#fff3e0" stroke="#f57c00" rx="3"/>
+      <text x="730" y="117" text-anchor="middle" font-weight="bold">sock B</text>
+      <text x="730" y="132" text-anchor="middle" fill="#586069" font-size="10">LISTEN 10.0.0.1:80</text>
+      <text x="730" y="147" text-anchor="middle" fill="#586069" font-size="10">sk_reuse = 1</text>
+      <text x="730" y="162" text-anchor="middle" fill="#586069" font-size="9">sk_bind_node →</text>
+      <line x1="800" y1="140" x2="855" y2="140" stroke="#586069" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+      <rect x="860" y="120" width="35" height="40" fill="#fff" stroke="#586069" rx="3"/>
+      <text x="877" y="145" text-anchor="middle" fill="#586069" font-weight="bold">∅</text>
+
+      <!-- port=8192 的 owners (单 socket) -->
+      <line x1="302" y1="305" x2="480" y2="340" stroke="#586069" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <rect x="485" y="310" width="140" height="60" fill="#fff3e0" stroke="#f57c00" rx="3"/>
+      <text x="555" y="327" text-anchor="middle" font-weight="bold">sock C</text>
+      <text x="555" y="342" text-anchor="middle" fill="#586069" font-size="10">ESTABLISHED</text>
+      <text x="555" y="357" text-anchor="middle" fill="#586069" font-size="10">connect 用了 8192</text>
+      <line x1="625" y1="340" x2="680" y2="340" stroke="#586069" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <rect x="685" y="325" width="35" height="30" fill="#fff" stroke="#586069" rx="3"/>
+      <text x="702" y="345" text-anchor="middle" fill="#586069" font-weight="bold">∅</text>
+
+      <!-- 桶 1 空 -->
+      <line x1="165" y1="230" x2="855" y2="230" stroke="#586069" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arr2)"/>
+      <rect x="860" y="215" width="35" height="30" fill="#fff" stroke="#586069" rx="3"/>
+      <text x="877" y="235" text-anchor="middle" fill="#586069" font-weight="bold">∅</text>
+
+      <!-- 双层结构说明 -->
+      <text x="450" y="430" font-size="12" font-weight="bold" fill="#24292e">双层链表结构：</text>
+      <text x="450" y="448" font-size="11" fill="#388e3c">外层（绿）：桶.chain → inet_bind_bucket 链，按 (net, l3mdev, port) 索引</text>
+      <text x="450" y="465" font-size="11" fill="#f57c00">内层（橙）：tb.owners → 使用该端口的所有 sock 链</text>
+      <text x="450" y="482" font-size="11" fill="#586069">冲突检测：bind/connect 时先找到 tb，再遍历 tb.owners 比对 sk_state / sk_reuse / uid</text>
+    </svg>
+  </div>
+
+  <div class="note"><strong>为什么需要中间层 <code>inet_bind_bucket</code>？</strong> 同一端口可能被多个 socket 共用（REUSEADDR / REUSEPORT / TIME_WAIT 复用）。如果直接把 sock 链在桶里，端口冲突检测要遍历全表；用 bucket 做"端口代理"后，<strong>查端口 = O(1)</strong>，桶内只挂使用该端口的 sock。</div>
+  <div class="src-ref"><strong>源码定位：</strong>桶类型 <code>inet_bind_hashbucket</code>（<code>inet_hashtables.h:181-184</code>），中间层 <code>inet_bind_bucket</code>（<code>inet_hashtables.h:156-171</code>），bucket 内 <code>owners</code> 链（<code>inet_hashtables.h:170</code>），sock 用 <code>sk_bind_node</code> 链入。</div>
+</div>
+
+<!-- ============ lhash2 ============ -->
+<div class="panel" id="lhash2">
+  <h2>③ lhash2 — 监听 socket 二级哈希表（IP + 端口）</h2>
+  <div class="desc">按 <strong>本地 IP + 端口</strong> 哈希，是 <code>listening_hash</code> 的升级版。解决"大量虚拟主机同端口"时旧表查找慢的问题。收 SYN 时先查精确 IP 桶，再查 <code>INADDR_ANY</code> 桶。</div>
+
+  <div class="meta">
+    <div><strong>桶数组：</strong><code>*lhash2</code> 动态分配</div>
+    <div><strong>桶数：</strong>2 的幂，由 <code>lhash2_mask+1</code> 决定</div>
+    <div><strong>桶类型：</strong><code>inet_listen_hashbucket</code></div>
+    <div><strong>桶字段：</strong><code>lock + count + head</code></div>
+    <div><strong>链入字段：</strong><code>icsk_listen_portaddr_node</code></div>
+    <div><strong>初始化：</strong><code>inet_hashinfo2_init()</code></div>
+  </div>
+
+  <div class="diagram">
+    <svg width="820" height="360" viewBox="0 0 820 360" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="11">
+      <defs>
+        <marker id="arr4" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6 Z" fill="#586069"/>
+        </marker>
+      </defs>
+
+      <text x="20" y="30" font-size="13" font-weight="bold" fill="#24292e">*lhash2 数组（tcp_hashinfo.lhash2）</text>
+      <text x="20" y="46" font-size="10" fill="#586069">桶索引 = hash(IP, port) &amp; lhash2_mask</text>
+
+      <rect x="20" y="60" width="160" height="280" fill="#f6f8fa" stroke="#d1d5da" rx="4"/>
+      <text x="100" y="78" text-anchor="middle" font-weight="bold">inet_listen_hashbucket[]</text>
+
+      <!-- 桶 H1 -->
+      <rect x="35" y="90" width="130" height="60" fill="#e3f2fd" stroke="#1976d2" rx="3"/>
+      <text x="100" y="107" text-anchor="middle" font-weight="bold">[hash(0.0.0.0, 80)]</text>
+      <text x="100" y="122" text-anchor="middle" fill="#c2185b" font-size="10">🔒 lock · count=1</text>
+      <text x="100" y="137" text-anchor="middle" fill="#586069" font-size="10">head ↓</text>
+
+      <!-- 桶 H2 -->
+      <rect x="35" y="165" width="130" height="60" fill="#e3f2fd" stroke="#1976d2" rx="3"/>
+      <text x="100" y="182" text-anchor="middle" font-weight="bold">[hash(10.0.0.1, 80)]</text>
+      <text x="100" y="197" text-anchor="middle" fill="#c2185b" font-size="10">🔒 lock · count=1</text>
+      <text x="100" y="212" text-anchor="middle" fill="#586069" font-size="10">head ↓</text>
+
+      <!-- 桶 H3 -->
+      <rect x="35" y="240" width="130" height="60" fill="#e3f2fd" stroke="#1976d2" rx="3"/>
+      <text x="100" y="257" text-anchor="middle" font-weight="bold">[hash(10.0.0.2, 80)]</text>
+      <text x="100" y="272" text-anchor="middle" fill="#c2185b" font-size="10">🔒 lock · count=2</text>
+      <text x="100" y="287" text-anchor="middle" fill="#586069" font-size="10">head ↓</text>
+
+      <!-- 桶 H1 链表 -->
+      <line x1="165" y1="120" x2="210" y2="120" stroke="#586069" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <rect x="215" y="85" width="195" height="70" fill="#fff3e0" stroke="#f57c00" rx="3"/>
+      <text x="312" y="102" text-anchor="middle" font-weight="bold">inet_connection_sock</text>
+      <text x="312" y="117" text-anchor="middle" fill="#586069" font-size="10">LISTEN 0.0.0.0:80（通配地址）</text>
+      <text x="312" y="132" text-anchor="middle" fill="#586069" font-size="10">icsk_listen_portaddr_node → ∅</text>
+
+      <!-- 桶 H2 链表 -->
+      <line x1="165" y1="195" x2="210" y2="195" stroke="#586069" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <rect x="215" y="160" width="195" height="70" fill="#fff3e0" stroke="#f57c00" rx="3"/>
+      <text x="312" y="177" text-anchor="middle" font-weight="bold">inet_connection_sock</text>
+      <text x="312" y="192" text-anchor="middle" fill="#586069" font-size="10">LISTEN 10.0.0.1:80</text>
+      <text x="312" y="207" text-anchor="middle" fill="#586069" font-size="10">icsk_listen_portaddr_node → ∅</text>
+
+      <!-- 桶 H3 链表 (2 个) -->
+      <line x1="165" y1="270" x2="210" y2="270" stroke="#586069" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <rect x="215" y="235" width="195" height="70" fill="#fff3e0" stroke="#f57c00" rx="3"/>
+      <text x="312" y="252" text-anchor="middle" font-weight="bold">inet_connection_sock A</text>
+      <text x="312" y="267" text-anchor="middle" fill="#586069" font-size="10">LISTEN 10.0.0.2:80 (worker 1)</text>
+      <text x="312" y="282" text-anchor="middle" fill="#586069" font-size="10">icsk_listen_portaddr_node →</text>
+      <line x1="410" y1="270" x2="445" y2="270" stroke="#586069" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <rect x="450" y="235" width="195" height="70" fill="#fff3e0" stroke="#f57c00" rx="3"/>
+      <text x="547" y="252" text-anchor="middle" font-weight="bold">inet_connection_sock B</text>
+      <text x="547" y="267" text-anchor="middle" fill="#586069" font-size="10">LISTEN 10.0.0.2:80 (worker 2)</text>
+      <text x="547" y="282" text-anchor="middle" fill="#586069" font-size="10">icsk_listen_portaddr_node → ∅</text>
+
+      <!-- 收包查找策略 -->
+      <text x="430" y="330" font-size="12" font-weight="bold" fill="#24292e">收 SYN 时的查找策略：</text>
+      <text x="430" y="348" font-size="11" fill="#586069">① 先查 lhash2[hash(目的 IP, 目的端口)] — 精确匹配</text>
+      <text x="430" y="365" font-size="11" fill="#586069">② 没找到再查 lhash2[hash(0.0.0.0, 目的端口)] — 通配兜底</text>
+    </svg>
+  </div>
+
+  <div class="note"><strong>lhash2 vs listening_hash：</strong>同端口不同 IP 的 socket 在 <code>listening_hash</code> 里挤在同一桶，需要遍历比对 IP；在 <code>lhash2</code> 里分散在不同桶，O(1) 直达。虚拟主机场景性能差 10x+。</div>
+  <div class="src-ref"><strong>源码定位：</strong>桶类型 <code>inet_listen_hashbucket</code>（<code>inet_hashtables.h:192-199</code>），链入字段 <code>icsk_listen_portaddr_node</code>（<code>inet_connection_sock.h:106</code>），查找函数 <code>inet_lhash2_lookup()</code>（<code>inet_hashtables.c:278</code>）。</div>
+</div>
+
+<!-- ============ listening_hash ============ -->
+<div class="panel" id="lhash">
+  <h2>④ listening_hash — 监听 socket 一级哈希表（仅端口）</h2>
+  <div class="desc">按 <strong>本地端口</strong> 哈希，<strong>固定 32 桶内联</strong>在 <code>inet_hashinfo</code> 结构体中。旧机制，与 lhash2 共存（兼容 + 双保险）。同一端口不同 IP 的监听 socket 都链在同一桶，靠遍历区分 IP。</div>
+
+  <div class="meta">
+    <div><strong>桶数组：</strong><code>listening_hash[32]</code> 内联</div>
+    <div><strong>桶数：</strong>固定 <code>INET_LHTABLE_SIZE=32</code></div>
+    <div><strong>桶类型：</strong><code>inet_listen_hashbucket</code></div>
+    <div><strong>桶字段：</strong><code>lock + count + nulls_head</code></div>
+    <div><strong>链入字段：</strong><code>sk_node</code>（<code>sock_common.skc_node</code>）</div>
+    <div><strong>尾标记：</strong>NULLS(<code>LISTENING_NULLS_BASE</code> + 桶号)</div>
+  </div>
+
+  <div class="diagram">
+    <svg width="820" height="380" viewBox="0 0 820 380" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="11">
+      <defs>
+        <marker id="arr5" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6 Z" fill="#586069"/>
+        </marker>
+        <marker id="arr5-nulls" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6 Z" fill="#d73a49"/>
+        </marker>
+      </defs>
+
+      <text x="20" y="30" font-size="13" font-weight="bold" fill="#24292e">listening_hash[32]（内联在 tcp_hashinfo 中）</text>
+      <text x="20" y="46" font-size="10" fill="#586069">桶索引 = port &amp; 31（仅用端口哈希，IP 不参与）</text>
+
+      <rect x="20" y="60" width="160" height="300" fill="#f6f8fa" stroke="#d1d5da" rx="4"/>
+      <text x="100" y="78" text-anchor="middle" font-weight="bold">listening_hash[32]</text>
+      <text x="100" y="92" text-anchor="middle" fill="#586069" font-size="9">____cacheline_aligned_in_smp</text>
+
+      <!-- 桶 80%32=16 -->
+      <rect x="35" y="110" width="130" height="70" fill="#e3f2fd" stroke="#1976d2" rx="3"/>
+      <text x="100" y="127" text-anchor="middle" font-weight="bold">[16]</text>
+      <text x="100" y="142" text-anchor="middle" fill="#586069" font-size="9">80 % 32 = 16</text>
+      <text x="100" y="157" text-anchor="middle" fill="#c2185b" font-size="10">🔒 lock · count=3</text>
+      <text x="100" y="172" text-anchor="middle" fill="#586069" font-size="10">nulls_head ↓</text>
+
+      <!-- 其他桶 -->
+      <rect x="35" y="200" width="130" height="50" fill="#e3f2fd" stroke="#1976d2" rx="3" opacity="0.5"/>
+      <text x="100" y="220" text-anchor="middle" font-weight="bold">[0]</text>
+      <text x="100" y="237" text-anchor="middle" fill="#959da5" font-size="10">空</text>
+
+      <text x="100" y="268" text-anchor="middle" fill="#959da5">⋮</text>
+
+      <rect x="35" y="280" width="130" height="50" fill="#e3f2fd" stroke="#1976d2" rx="3" opacity="0.5"/>
+      <text x="100" y="300" text-anchor="middle" font-weight="bold">[31]</text>
+      <text x="100" y="317" text-anchor="middle" fill="#959da5" font-size="10">空</text>
+
+      <!-- 桶 16 的链表 -->
+      <line x1="165" y1="145" x2="210" y2="145" stroke="#586069" stroke-width="1.5" marker-end="url(#arr5)"/>
+
+      <rect x="215" y="105" width="175" height="75" fill="#fff3e0" stroke="#f57c00" rx="3"/>
+      <text x="302" y="122" text-anchor="middle" font-weight="bold">sock A (LISTEN)</text>
+      <text x="302" y="137" text-anchor="middle" fill="#586069" font-size="10">0.0.0.0:80</text>
+      <text x="302" y="152" text-anchor="middle" fill="#586069" font-size="10">通配地址</text>
+      <text x="302" y="167" text-anchor="middle" fill="#586069" font-size="9">sk_node →</text>
+      <line x1="390" y1="145" x2="425" y2="145" stroke="#586069" stroke-width="1.5" marker-end="url(#arr5)"/>
+
+      <rect x="430" y="105" width="175" height="75" fill="#fff3e0" stroke="#f57c00" rx="3"/>
+      <text x="517" y="122" text-anchor="middle" font-weight="bold">sock B (LISTEN)</text>
+      <text x="517" y="137" text-anchor="middle" fill="#586069" font-size="10">10.0.0.1:80</text>
+      <text x="517" y="152" text-anchor="middle" fill="#586069" font-size="10">具体地址</text>
+      <text x="517" y="167" text-anchor="middle" fill="#586069" font-size="9">sk_node →</text>
+      <line x1="605" y1="145" x2="640" y2="145" stroke="#586069" stroke-width="1.5" marker-end="url(#arr5)"/>
+
+      <rect x="645" y="105" width="140" height="75" fill="#fff3e0" stroke="#f57c00" rx="3"/>
+      <text x="715" y="122" text-anchor="middle" font-weight="bold">sock C (LISTEN)</text>
+      <text x="715" y="137" text-anchor="middle" fill="#586069" font-size="10">10.0.0.2:80</text>
+      <text x="715" y="152" text-anchor="middle" fill="#586069" font-size="10">具体地址</text>
+      <text x="715" y="167" text-anchor="middle" fill="#586069" font-size="9">sk_node →</text>
+      <line x1="785" y1="145" x2="815" y2="145" stroke="#d73a49" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+      <!-- NULLS 说明 -->
+      <rect x="600" y="220" width="210" height="85" fill="#fff" stroke="#d73a49" stroke-dasharray="4,3" rx="3"/>
+      <text x="705" y="240" text-anchor="middle" fill="#d73a49" font-weight="bold">NULLS(2^29 + 16)</text>
+      <text x="705" y="258" text-anchor="middle" fill="#586069" font-size="10">LISTENING_NULLS_BASE = 1 &lt;&lt; 29</text>
+      <text x="705" y="275" text-anchor="middle" fill="#586069" font-size="10">尾哨兵编码桶号（16），用于</text>
+      <text x="705" y="290" text-anchor="middle" fill="#586069" font-size="10">RCU 遍历检测 LISTEN→ESTAB 迁移</text>
+
+      <!-- 问题说明 -->
+      <text x="215" y="345" font-size="12" font-weight="bold" fill="#c2185b">⚠ 同端口不同 IP 的 socket 全在同一桶，需遍历比对 IP</text>
+    </svg>
+  </div>
+
+  <div class="note"><strong>为什么固定 32 桶就够了？</strong> 源码注释 <code>"Yes, really, this is all you need."</code>（<code>inet_hashtables.h:202</code>）。监听 socket 数量远少于已建立连接，32 桶 + 遍历已经足够。lhash2 是为虚拟主机 / 高密度 listen 场景引入的优化。</div>
+  <div class="src-ref"><strong>源码定位：</strong>数组声明 <code>listening_hash[INET_LHTABLE_SIZE]</code>（<code>inet_hashtables.h:335-339</code>），<code>INET_LHTABLE_SIZE = 32</code>（<code>inet_hashtables.h:202</code>），链入字段 <code>sk_node</code>（<code>sock.h</code>），尾标记 <code>LISTENING_NULLS_BASE = 1 &lt;&lt; 29</code>（<code>inet_hashtables.h:191</code>）。</div>
+</div>
+
+<!-- ============ 对比 ============ -->
+<div class="panel" id="compare">
+  <h2>⑤ 4 张表对比总结</h2>
+  <div class="desc">同一 socket 在生命周期的不同阶段，会出现在不同哈希表中。</div>
+
+  <table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:12px;">
+    <thead>
+      <tr style="background:#f6f8fa;border-bottom:2px solid #d1d5da;">
+        <th style="text-align:left;padding:10px;">维度</th>
+        <th style="text-align:left;padding:10px;">ehash</th>
+        <th style="text-align:left;padding:10px;">bhash</th>
+        <th style="text-align:left;padding:10px;">lhash2</th>
+        <th style="text-align:left;padding:10px;">listening_hash</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #e1e4e8;">
+        <td style="padding:10px;font-weight:500;">哈希键</td>
+        <td style="padding:10px;">四元组</td>
+        <td style="padding:10px;">(net, l3mdev, port)</td>
+        <td style="padding:10px;">(IP, port)</td>
+        <td style="padding:10px;">port</td>
+      </tr>
+      <tr style="border-bottom:1px solid #e1e4e8;background:#fafbfc;">
+        <td style="padding:10px;font-weight:500;">桶数组分配</td>
+        <td style="padding:10px;">动态 <code>*ehash</code></td>
+        <td style="padding:10px;">动态 <code>*bhash</code></td>
+        <td style="padding:10px;">动态 <code>*lhash2</code></td>
+        <td style="padding:10px;"><strong>内联固定 32 桶</strong></td>
+      </tr>
+      <tr style="border-bottom:1px solid #e1e4e8;">
+        <td style="padding:10px;font-weight:500;">桶结构</td>
+        <td style="padding:10px;"><code>nulls_head</code> 仅</td>
+        <td style="padding:10px;"><code>lock + chain</code></td>
+        <td style="padding:10px;"><code>lock + count + head</code></td>
+        <td style="padding:10px;"><code>lock + count + nulls_head</code></td>
+      </tr>
+      <tr style="border-bottom:1px solid #e1e4e8;background:#fafbfc;">
+        <td style="padding:10px;font-weight:500;">链表层级</td>
+        <td style="padding:10px;">单层（nulls）</td>
+        <td style="padding:10px;"><strong>双层</strong>（桶链 + owners 链）</td>
+        <td style="padding:10px;">单层</td>
+        <td style="padding:10px;">单层（nulls）</td>
+      </tr>
+      <tr style="border-bottom:1px solid #e1e4e8;">
+        <td style="padding:10px;font-weight:500;">存什么</td>
+        <td style="padding:10px;">sock + timewait</td>
+        <td style="padding:10px;">bind_bucket（中间层）<br>→ 内层挂 sock / tw</td>
+        <td style="padding:10px;">inet_connection_sock（listen 态）</td>
+        <td style="padding:10px;">sock（listen 态）</td>
+      </tr>
+      <tr style="border-bottom:1px solid #e1e4e8;background:#fafbfc;">
+        <td style="padding:10px;font-weight:500;">链入字段</td>
+        <td style="padding:10px;"><code>sk_nulls_node</code> / <code>tw_node</code></td>
+        <td style="padding:10px;">外 <code>tb-&gt;node</code><br>内 <code>sk_bind_node</code></td>
+        <td style="padding:10px;"><code>icsk_listen_portaddr_node</code></td>
+        <td style="padding:10px;"><code>sk_node</code></td>
+      </tr>
+      <tr style="border-bottom:1px solid #e1e4e8;">
+        <td style="padding:10px;font-weight:500;">锁策略</td>
+        <td style="padding:10px;">分离锁数组（多桶共享）</td>
+        <td style="padding:10px;">每桶一把 spinlock</td>
+        <td style="padding:10px;">每桶一把 spinlock</td>
+        <td style="padding:10px;">每桶一把 spinlock</td>
+      </tr>
+      <tr style="background:#fafbfc;">
+        <td style="padding:10px;font-weight:500;">用途</td>
+        <td style="padding:10px;">数据包找连接</td>
+        <td style="padding:10px;">bind/connect 端口冲突</td>
+        <td style="padding:10px;">SYN 找 listener（精确）</td>
+        <td style="padding:10px;">SYN 找 listener（兜底）</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note" style="margin-top:24px;"><strong>回答你的判断：</strong>
+  <ul style="margin-top:8px;padding-left:20px;line-height:1.8;">
+    <li><strong>✓ ehash 是数组 + 链表</strong>，精确地说是"数组 + <strong>nulls</strong> 链表"（尾节点是编码了桶号的哨兵，不是 NULL，用于 RCU 无锁遍历检测节点迁移）。</li>
+    <li><strong>✓ bhash 是数组 + 链表 + 链表节点里还有链表</strong>，精确地说：外层数组的每个桶含 <code>spinlock + chain</code>；chain 挂 <code>inet_bind_bucket</code> 链（按 <code>tb-&gt;node</code>）；每个 bucket 内还有 <code>owners</code> hlist，挂所有使用该端口的 sock（按 <code>sk_bind_node</code>）。<strong>双层链表</strong>是 bhash 区别于其他 3 张表的关键特征。</li>
+  </ul></div>
+</div>
+
+<script>
+  const tabs = document.querySelectorAll('.tab');
+  const panels = document.querySelectorAll('.panel');
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.forEach(t => t.classList.remove('active'));
+      panels.forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById(tab.dataset.target).classList.add('active');
+    });
+  });
+</script>
+
+</body>
+</html>

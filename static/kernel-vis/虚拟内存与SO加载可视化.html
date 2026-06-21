@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>虚拟内存 → 物理内存 · 全景链路</title>
+<style>body{background:#fff;margin:0;padding:10px;font-family:'Menlo','Consolas',monospace}svg text{font-family:'Menlo','Consolas',monospace}</style>
+</head>
+<body>
+<svg width="100%" viewBox="0 0 1300 860" style="display:block;margin:0 auto">
+<defs>
+  <marker id="a" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0,0L10,3.5L0,7" fill="#333"/></marker>
+  <marker id="ab" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0,0L10,3.5L0,7" fill="#0055bb"/></marker>
+</defs>
+
+<!-- ════════════════════════════════════════════════
+     STAGE 1: task_struct → mm_struct
+     ════════════════════════════════════════════════ -->
+
+<rect x="20" y="300" width="140" height="70" rx="6" fill="#fff" stroke="#222" stroke-width="2.5"/>
+<text x="36" y="325" font-size="12" font-weight="700" fill="#111">task_struct</text>
+<text x="36" y="345" font-size="12" fill="#0055bb" font-weight="600">.mm</text>
+<text x="60" y="345" font-size="11" fill="#888">*mm_struct</text>
+<text x="36" y="360" font-size="10" fill="#aaa">files, fs, cred…</text>
+
+<!-- Arrow .mm -->
+<line x1="160" y1="335" x2="210" y2="335" stroke="#0055bb" stroke-width="2.5" marker-end="url(#ab)"/>
+<text x="165" y="325" font-size="11" fill="#0055bb" font-weight="700">.mm</text>
+
+<!-- mm_struct -->
+<rect x="215" y="270" width="195" height="160" rx="6" fill="#fff" stroke="#0055bb" stroke-width="2.5"/>
+<text x="230" y="298" font-size="12" font-weight="700" fill="#0055bb">mm_struct</text>
+<line x1="230" y1="305" x2="395" y2="305" stroke="#0055bb" stroke-width="1" opacity=".3"/>
+<text x="230" y="325" font-size="9" fill="#0055bb" font-weight="600">.mmap</text>
+<text x="275" y="325" font-size="11" fill="#555">*vm_area_struct</text>
+<text x="230" y="345" font-size="9" fill="#0055bb" font-weight="600">.mm_rb</text>
+<text x="282" y="345" font-size="11" fill="#555">rb_root (红黑树)</text>
+<text x="230" y="370" font-size="9" fill="#996600" font-weight="600">.pgd</text>
+<text x="270" y="370" font-size="11" fill="#555">*pgd_t</text>
+<text x="230" y="387" font-size="10" fill="#999">↑ 写入 CR3 寄存器</text>
+<text x="230" y="407" font-size="9" fill="#555" font-weight="600">.brk</text>
+<text x="270" y="407" font-size="11" fill="#888">堆顶  .start_stack 栈起始</text>
+
+<!-- ════════════════════════════════════════════════
+     STAGE 2 TOP: .mmap → VMA 链表 → 虚拟内存区域
+     ════════════════════════════════════════════════ -->
+
+<!-- Arrow .mmap up-right -->
+<path d="M410,310 L450,310 L450,80 L470,80" stroke="#0055bb" stroke-width="2" fill="none" marker-end="url(#ab)"/>
+<text x="418" y="200" font-size="11" fill="#0055bb" font-weight="700" transform="rotate(-90,418,200)">.mmap → VMA 链表</text>
+
+<!-- vm_area_struct box -->
+<rect x="475" y="30" width="200" height="100" rx="6" fill="#f8faff" stroke="#0055bb" stroke-width="2"/>
+<text x="490" y="55" font-size="11" font-weight="700" fill="#0055bb">vm_area_struct</text>
+<text x="490" y="75" font-size="12" fill="#555">.vm_start / .vm_end  地址范围</text>
+<text x="490" y="92" font-size="12" fill="#555">.vm_flags  R/W/X 权限</text>
+<text x="490" y="109" font-size="12" fill="#0055bb" font-weight="600">.vm_file  *file (NULL=匿名)</text>
+<text x="490" y="124" font-size="11" fill="#888">.vm_pgoff 偏移  .vm_ops→.fault</text>
+
+<!-- Arrow → vm_next chain -->
+<line x1="675" y1="80" x2="705" y2="80" stroke="#0055bb" stroke-width="2" marker-end="url(#ab)"/>
+<text x="678" y="72" font-size="10" fill="#0055bb">vm_next →</text>
+
+<!-- VMA regions horizontal row -->
+<g transform="translate(710,30)">
+  <!-- .text -->
+  <rect width="72" height="100" rx="4" fill="#fff" stroke="#333" stroke-width="1.5"/>
+  <text x="8" y="20" font-size="12" font-weight="700" fill="#333">.text</text>
+  <text x="8" y="38" font-size="9" fill="#888">R-X</text>
+  <text x="8" y="52" font-size="9" fill="#888">主程序代码</text>
+  <text x="8" y="70" font-size="9" fill="#aaa">vm_file=</text>
+  <text x="8" y="82" font-size="9" fill="#aaa">主程序ELF</text>
+
+  <!-- .data -->
+  <rect x="78" width="72" height="100" rx="4" fill="#fffef5" stroke="#996600" stroke-width="1.5"/>
+  <text x="86" y="20" font-size="12" font-weight="700" fill="#996600">.data</text>
+  <text x="86" y="38" font-size="9" fill="#888">RW-</text>
+  <text x="86" y="52" font-size="9" fill="#888">全局变量</text>
+  <text x="86" y="70" font-size="9" fill="#aaa">vm_file=</text>
+  <text x="86" y="82" font-size="9" fill="#aaa">NULL(匿名)</text>
+
+  <!-- .bss -->
+  <rect x="156" width="60" height="100" rx="4" fill="#fffef5" stroke="#996600" stroke-width="1.5"/>
+  <text x="164" y="20" font-size="12" font-weight="700" fill="#996600">.bss</text>
+  <text x="164" y="38" font-size="9" fill="#888">RW-</text>
+  <text x="164" y="52" font-size="9" fill="#888">未初始化</text>
+  <text x="164" y="70" font-size="9" fill="#aaa">零页填充</text>
+
+  <!-- 堆 -->
+  <rect x="222" width="60" height="100" rx="4" fill="#f8f8f8" stroke="#666" stroke-width="1.5"/>
+  <text x="230" y="20" font-size="12" font-weight="700" fill="#555">堆</text>
+  <text x="230" y="38" font-size="9" fill="#888">RW- ↑</text>
+  <text x="230" y="52" font-size="9" fill="#888">brk/mmap</text>
+  <text x="230" y="70" font-size="9" fill="#aaa">mm.brk</text>
+  <text x="230" y="82" font-size="9" fill="#aaa">控制堆顶</text>
+
+  <!-- SO .text -->
+  <rect x="290" width="88" height="100" rx="4" fill="#f8faff" stroke="#0055bb" stroke-width="2"/>
+  <text x="298" y="18" font-size="11" font-weight="700" fill="#0055bb">.so .text</text>
+  <text x="298" y="34" font-size="9" fill="#888">R-X 共享</text>
+  <text x="298" y="48" font-size="9" fill="#888">PT_LOAD #1</text>
+  <text x="298" y="66" font-size="10" fill="#0055bb" font-weight="600">vm_file=</text>
+  <text x="298" y="78" font-size="10" fill="#0055bb" font-weight="600">libfoo.so</text>
+  <text x="298" y="94" font-size="9" fill="#888">vm_pgoff=0</text>
+
+  <!-- SO .data -->
+  <rect x="384" width="88" height="100" rx="4" fill="#fff0f0" stroke="#cc0000" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <text x="392" y="18" font-size="11" font-weight="700" fill="#cc0000">.so .data</text>
+  <text x="392" y="34" font-size="9" fill="#888">RW- COW</text>
+  <text x="392" y="48" font-size="9" fill="#888">PT_LOAD #2</text>
+  <text x="392" y="66" font-size="10" fill="#cc0000" font-weight="600">vm_file=</text>
+  <text x="392" y="78" font-size="10" fill="#cc0000" font-weight="600">libfoo.so</text>
+  <text x="392" y="94" font-size="9" fill="#888">vm_pgoff=2</text>
+
+  <!-- 栈 -->
+  <rect x="478" width="60" height="100" rx="4" fill="#f8f8f8" stroke="#666" stroke-width="1.5"/>
+  <text x="486" y="20" font-size="12" font-weight="700" fill="#555">栈</text>
+  <text x="486" y="38" font-size="9" fill="#888">RW- ↓</text>
+  <text x="486" y="52" font-size="9" fill="#888">8MB</text>
+  <text x="486" y="70" font-size="9" fill="#aaa">vm_file=</text>
+  <text x="486" y="82" font-size="9" fill="#aaa">NULL</text>
+</g>
+
+<!-- VMA label -->
+<text x="710" y="150" font-size="11" fill="#888">← 低地址 (0x0040_0000)</text>
+<text x="1160" y="150" font-size="11" fill="#888">高地址 (0x7FFF…) →</text>
+
+<!-- ════════════════════════════════════════════════
+     STAGE 2 BOTTOM: .pgd → CR3 → 页表
+     ════════════════════════════════════════════════ -->
+
+<!-- Arrow .pgd down -->
+<path d="M310,430 L310,470" stroke="#996600" stroke-width="2" fill="none" marker-end="url(#a)"/>
+<text x="315" y="455" font-size="11" fill="#996600" font-weight="700">.pgd</text>
+
+<!-- CR3 -->
+<rect x="250" y="475" width="120" height="45" rx="6" fill="#fffef5" stroke="#996600" stroke-width="2"/>
+<text x="265" y="498" font-size="10" font-weight="700" fill="#996600">CR3 寄存器</text>
+<text x="265" y="514" font-size="10" fill="#999">存 PGD 物理基址</text>
+
+<!-- Arrow CR3 → PGD -->
+<line x1="370" y1="497" x2="420" y2="497" stroke="#996600" stroke-width="2" marker-end="url(#a)"/>
+
+<!-- 4-level page table chain -->
+<rect x="425" y="475" width="80" height="45" rx="5" fill="#fff" stroke="#996600" stroke-width="1.5"/>
+<text x="435" y="495" font-size="9" font-weight="700" fill="#996600">PGD</text>
+<text x="435" y="512" font-size="10" fill="#999">VA[47:39]</text>
+
+<line x1="505" y1="497" x2="525" y2="497" stroke="#996600" stroke-width="1.5" marker-end="url(#a)"/>
+
+<rect x="530" y="475" width="80" height="45" rx="5" fill="#fff" stroke="#996600" stroke-width="1.5"/>
+<text x="540" y="495" font-size="9" font-weight="700" fill="#996600">PUD</text>
+<text x="540" y="512" font-size="10" fill="#999">VA[38:30]</text>
+
+<line x1="610" y1="497" x2="630" y2="497" stroke="#996600" stroke-width="1.5" marker-end="url(#a)"/>
+
+<rect x="635" y="475" width="80" height="45" rx="5" fill="#fff" stroke="#996600" stroke-width="1.5"/>
+<text x="645" y="495" font-size="9" font-weight="700" fill="#996600">PMD</text>
+<text x="645" y="512" font-size="10" fill="#999">VA[29:21]</text>
+
+<line x1="715" y1="497" x2="735" y2="497" stroke="#996600" stroke-width="1.5" marker-end="url(#a)"/>
+
+<rect x="740" y="470" width="100" height="55" rx="5" fill="#fff" stroke="#222" stroke-width="2.5"/>
+<text x="755" y="493" font-size="10" font-weight="700" fill="#111">PTE 末级</text>
+<text x="755" y="510" font-size="10" fill="#555">VA[20:12]</text>
+<text x="755" y="522" font-size="11" fill="#996600" font-weight="700">PFN[40bit]</text>
+
+<!-- Arrow PTE → physical -->
+<line x1="840" y1="497" x2="890" y2="497" stroke="#333" stroke-width="2.5" marker-end="url(#a)"/>
+<text x="845" y="490" font-size="11" fill="#996600" font-weight="700">PFN</text>
+
+<!-- 48bit VA breakdown -->
+<text x="425" y="545" font-size="11" fill="#999">48-bit VA = PGD[9] + PUD[9] + PMD[9] + PTE[9] + offset[12]  每级 512 项，MMU 硬件自动遍历</text>
+
+<!-- ════════════════════════════════════════════════
+     STAGE 3: 物理内存 + Zone + struct page
+     ════════════════════════════════════════════════ -->
+
+<!-- Physical memory box -->
+<rect x="895" y="440" width="380" height="120" rx="6" fill="#fff" stroke="#222" stroke-width="2.5"/>
+<text x="910" y="465" font-size="12" font-weight="700" fill="#111">物理内存 (RAM)</text>
+
+<!-- Zones inside -->
+<rect x="910" y="478" width="105" height="65" rx="4" fill="#fff8f8" stroke="#cc0000" stroke-width="1.5"/>
+<text x="920" y="496" font-size="12" font-weight="700" fill="#cc0000">ZONE_DMA</text>
+<text x="920" y="512" font-size="10" fill="#888">0~16MB</text>
+<text x="920" y="526" font-size="9" fill="#aaa">ISA 设备 DMA</text>
+<text x="920" y="538" font-size="9" fill="#aaa">极其宝贵</text>
+
+<rect x="1022" y="478" width="105" height="65" rx="4" fill="#fffef5" stroke="#996600" stroke-width="1.5"/>
+<text x="1032" y="496" font-size="12" font-weight="700" fill="#996600">ZONE_DMA32</text>
+<text x="1032" y="512" font-size="10" fill="#888">16MB~4GB</text>
+<text x="1032" y="526" font-size="9" fill="#aaa">32位设备 DMA</text>
+<text x="1032" y="538" font-size="9" fill="#aaa">内核 DMA 分配</text>
+
+<rect x="1134" y="478" width="128" height="65" rx="4" fill="#f8fff8" stroke="#336600" stroke-width="1.5"/>
+<text x="1144" y="496" font-size="12" font-weight="700" fill="#336600">ZONE_NORMAL</text>
+<text x="1144" y="512" font-size="10" fill="#888">4GB~内存顶部</text>
+<text x="1144" y="526" font-size="9" fill="#aaa">常规分配区域</text>
+<text x="1144" y="538" font-size="9" fill="#336600" font-weight="600">.so 物理页在此</text>
+
+<!-- struct page -->
+<rect x="895" y="580" width="380" height="90" rx="6" fill="#fffef5" stroke="#996600" stroke-width="2"/>
+<text x="910" y="603" font-size="10" font-weight="700" fill="#996600">struct page（每个物理页帧的描述符，64 字节）</text>
+<text x="910" y="622" font-size="12" fill="#555"><tspan fill="#0055bb" font-weight="600">.mapping</tspan> → address_space (page cache) 或 NULL (匿名页)</text>
+<text x="910" y="639" font-size="12" fill="#555"><tspan fill="#cc0000" font-weight="600">._mapcount</tspan> 用户态映射数 → =0 独占可直接写 &gt;0 共享需 COW 复制</text>
+<text x="910" y="656" font-size="12" fill="#555"><tspan fill="#0055bb" font-weight="600">.index</tspan> 文件内页偏移 <tspan fill="#555">._refcount 引用计数 .lru 回收链表</tspan></text>
+
+<!-- Arrow from PFN to struct page -->
+<line x1="1085" y1="560" x2="1085" y2="580" stroke="#996600" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="1090" y="575" font-size="10" fill="#996600">mem_map[PFN]</text>
+
+<!-- buddy allocator note -->
+<text x="895" y="690" font-size="11" fill="#999">buddy allocator：按 2^n 页管理空闲（order 0~10） alloc_pages() / free_pages()</text>
+<text x="895" y="705" font-size="11" fill="#999">page cache：以 (inode, 页偏移) 为 key 的 xarray 树  vm_file→f_mapping→address_space→i_pages</text>
+
+<!-- ════════════════════════════════════════════════
+     TLB: 页表缓存 (覆盖在页表上方)
+     ════════════════════════════════════════════════ -->
+
+<rect x="475" y="580" width="380" height="130" rx="6" fill="#f8faff" stroke="#0055bb" stroke-width="2"/>
+<text x="490" y="605" font-size="11" font-weight="700" fill="#0055bb">TLB — 页表缓存（CPU 内部）</text>
+<text x="490" y="625" font-size="12" fill="#555">缓存最近使用的 VPN→PFN 映射，避免每次访问都走 4 级页表</text>
+
+<!-- TLB entries visual -->
+<rect x="490" y="638" width="350" height="55" rx="4" fill="#fff" stroke="#0055bb" stroke-width="1"/>
+<!-- Headers -->
+<text x="500" y="654" font-size="10" fill="#0055bb" font-weight="700">VPN(虚拟页号)</text>
+<text x="620" y="654" font-size="10" fill="#0055bb" font-weight="700">PFN(物理页帧号)</text>
+<text x="745" y="654" font-size="10" fill="#0055bb" font-weight="700">标志</text>
+<!-- Row 1 -->
+<text x="500" y="670" font-size="10" fill="#555">0x7F3B_0000_0</text>
+<text x="620" y="670" font-size="10" fill="#996600" font-weight="600">0x100 (.so .text)</text>
+<text x="745" y="670" font-size="10" fill="#888">R-X ASID=5 Valid</text>
+<!-- Row 2 -->
+<text x="500" y="685" font-size="10" fill="#555">0x7F3B_0000_3</text>
+<text x="620" y="685" font-size="10" fill="#cc0000" font-weight="600">0x200 (.so .data)</text>
+<text x="745" y="685" font-size="10" fill="#888">R-- ASID=5 Valid</text>
+
+<text x="490" y="720" font-size="11" fill="#888">命中 → 1 周期得到物理地址  未命中 → 走 4 级页表 ~100 周期 → 结果缓存到 TLB</text>
+
+<!-- TLB extra notes -->
+<text x="475" y="738" font-size="11" fill="#999">x86: L1 DTLB(64项) + L1 ITLB(64项) + L2 STLB(1536项)</text>
+<text x="475" y="753" font-size="11" fill="#999"><tspan fill="#0055bb" font-weight="600">ASID/PCID</tspan>：每条目标记进程号，切换进程不必清空 TLB</text>
+<text x="475" y="768" font-size="11" fill="#999"><tspan fill="#cc0000" font-weight="600">TLB Shootdown</tspan>：多核下修改页表后 IPI 通知其他核刷新 TLB</text>
+
+<!-- TLB connection to page table -->
+<line x1="665" y1="525" x2="665" y2="580" stroke="#0055bb" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#ab)"/>
+<text x="670" y="555" font-size="10" fill="#0055bb">未命中时查页表</text>
+
+<!-- ════════════════════════════════════════════════
+     BOTTOM: COW + 完整链路
+     ════════════════════════════════════════════════ -->
+
+<line x1="20" y1="790" x2="1280" y2="790" stroke="#cc0000" stroke-width="1.5"/>
+
+<!-- COW -->
+<text x="20" y="815" font-size="10" font-weight="700" fill="#cc0000">COW</text>
+<text x="60" y="815" font-size="9" fill="#555">
+  写入前：A 和 B 的 PTE 都 → PFN 0x200，page._mapcount=1（共享）
+</text>
+<text x="20" y="835" font-size="9" fill="#555">
+  <tspan fill="#cc0000" font-weight="700">A 写入 →</tspan> do_wp_page() 检查 _mapcount≠0 → wp_page_copy() 分配新 PFN 0x401 并复制 → A 的 PTE → 0x401（独占） → PFN 0x200 page cache 不变，B 仍读原始值
+</text>
+
+</svg>
+</body>
+</html>

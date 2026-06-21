@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CPU 寄存器读取内存数据流程</title>
+<style>
+:root{--bg:#0b1120;--card:#111827;--border:#1e293b;--text:#e2e8f0;--dim:#64748b;--blue:#60a5fa;--amber:#fbbf24;--green:#34d399;--purple:#a78bfa;--red:#f87171;--orange:#fb923c}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);font-family:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;color:var(--text);line-height:1.6}
+
+.header{text-align:center;padding:40px 24px 20px}
+.header h1{font-size:32px;font-weight:700;color:#f8fafc}
+.header .sub{font-size:16px;color:var(--dim);margin-top:8px;font-family:Consolas,'Courier New',monospace}
+
+/* controls */
+.ctrl-bar{position:sticky;top:0;z-index:100;background:rgba(11,17,32,.95);backdrop-filter:blur(8px);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.ctrl-bar button{background:var(--card);border:2px solid var(--border);color:#94a3b8;font-size:16px;padding:10px 22px;border-radius:8px;cursor:pointer;transition:all .2s;font-weight:600}
+.ctrl-bar button:hover{background:#1e293b;color:var(--text);border-color:#475569}
+.ctrl-bar button.active{background:#1e3a5e;color:var(--blue);border-color:var(--blue)}
+.ctrl-bar button:disabled{opacity:.3;cursor:default}
+.ctrl-bar .spacer{flex:1}
+.step-counter{font-size:18px;font-weight:700;color:var(--blue)}
+
+/* phase bar */
+.phase-bar{display:flex;gap:4px;padding:16px 24px 8px;max-width:1200px;margin:0 auto}
+.phase-bar .p{flex:1;text-align:center}
+.phase-bar .p .bar{height:6px;background:#1e293b;border-radius:3px;transition:background .3s;margin-bottom:4px}
+.phase-bar .p .bar.done{background:var(--green)}
+.phase-bar .p .bar.current{background:var(--blue);box-shadow:0 0 10px rgba(96,165,250,.4)}
+.phase-bar .p .lbl{font-size:11px;color:#475569;transition:color .3s}
+.phase-bar .p .bar.current+.lbl{color:var(--blue)}
+.phase-bar .p .bar.done+.lbl{color:var(--green)}
+
+/* step description */
+.step-info{max-width:1200px;margin:16px auto;padding:0 24px}
+.step-card{background:linear-gradient(135deg,#1a2744,#111827);border:2px solid var(--border);border-radius:12px;padding:28px 32px;transition:border-color .3s}
+.step-card.active{border-color:var(--blue)}
+.step-card .step-title{font-size:24px;font-weight:700;color:var(--blue);margin-bottom:8px}
+.step-card .step-desc{font-size:18px;color:#cbd5e1;line-height:1.8}
+.step-card .step-desc code{background:rgba(96,165,250,.15);color:var(--blue);padding:2px 8px;border-radius:4px;font-family:Consolas,monospace;font-size:17px}
+
+/* main diagram */
+.diagram{max-width:1200px;margin:20px auto;padding:0 24px}
+svg.scene{display:block;width:100%;height:auto;border-radius:12px;background:#0d1220;border:1px solid var(--border)}
+
+/* bottom panels */
+.panels{max-width:1200px;margin:20px auto;padding:0 24px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+@media(max-width:900px){.panels{grid-template-columns:1fr}}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px}
+.panel h3{font-size:16px;font-weight:700;color:#94a3b8;margin-bottom:14px;text-transform:uppercase;letter-spacing:1px}
+
+/* register panel */
+.reg-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.reg-item{background:#0f172a;border:2px solid var(--border);border-radius:6px;padding:10px 12px;transition:all .3s}
+.reg-item .name{color:var(--dim);font-size:13px;font-weight:600}
+.reg-item .val{color:var(--text);font-family:Consolas,'Courier New',monospace;font-size:17px;margin-top:4px;font-weight:600}
+.reg-item.highlight{border-color:var(--blue);background:#0f1a30;box-shadow:0 0 12px rgba(96,165,250,.2)}
+.reg-item.highlight .val{color:var(--blue)}
+
+/* memory panel */
+.mem-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.mem-cell{background:#0f172a;border:2px solid var(--border);border-radius:6px;padding:10px;text-align:center;transition:all .3s}
+.mem-cell .addr{color:var(--dim);font-size:13px;font-weight:600}
+.mem-cell .data{color:#94a3b8;font-family:Consolas,monospace;font-size:16px;margin-top:4px;font-weight:600}
+.mem-cell.highlight{border-color:var(--amber);background:#1a1800;box-shadow:0 0 12px rgba(251,191,36,.2)}
+.mem-cell.highlight .data{color:var(--amber)}
+
+/* log panel */
+.log-box{max-height:300px;overflow-y:auto;font-size:15px;line-height:2}
+.log-box::-webkit-scrollbar{width:6px}
+.log-box::-webkit-scrollbar-thumb{background:#334155;border-radius:3px}
+.log-line{color:var(--dim);border-bottom:1px solid #1e293b;padding:4px 0}
+.log-line.active{color:var(--blue);font-weight:600}
+.log-line .time{color:#475569;margin-right:8px;font-weight:700}
+
+/* legend */
+.legend{max-width:1200px;margin:20px auto;padding:0 24px}
+.legend-inner{display:flex;gap:24px;padding:16px 20px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:15px;color:var(--dim);flex-wrap:wrap;justify-content:center}
+.legend-inner .dot{width:12px;height:12px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:middle}
+
+/* animation */
+@keyframes glow-blue{0%,100%{filter:drop-shadow(0 0 3px rgba(96,165,250,.3))}50%{filter:drop-shadow(0 0 12px rgba(96,165,250,.7))}}
+@keyframes glow-amber{0%,100%{filter:drop-shadow(0 0 3px rgba(251,191,36,.3))}50%{filter:drop-shadow(0 0 12px rgba(251,191,36,.7))}}
+@keyframes glow-green{0%,100%{filter:drop-shadow(0 0 3px rgba(52,211,153,.3))}50%{filter:drop-shadow(0 0 12px rgba(52,211,153,.7))}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>CPU 寄存器读取内存数据流程</h1>
+  <div class="sub">MOV EAX, [0x1000]  —  从内存地址 0x1000 读取 4 字节数据到 EAX 寄存器</div>
+</div>
+
+<div class="ctrl-bar">
+  <button id="btnPrev" onclick="prevStep()">◀ 上一步</button>
+  <button id="btnNext" onclick="nextStep()">下一步 ▶</button>
+  <button id="btnAuto" onclick="toggleAuto()">▶ 自动播放</button>
+  <button id="btnReset" onclick="resetAll()">↺ 重置</button>
+  <div class="spacer"></div>
+  <span class="step-counter" id="stepLabel">准备就绪</span>
+</div>
+
+<div class="phase-bar" id="phaseBar">
+  <div class="p"><div class="bar"></div><div class="lbl">取指</div></div>
+  <div class="p"><div class="bar"></div><div class="lbl">译码</div></div>
+  <div class="p"><div class="bar"></div><div class="lbl">地址计算</div></div>
+  <div class="p"><div class="bar"></div><div class="lbl">装入MAR</div></div>
+  <div class="p"><div class="bar"></div><div class="lbl">Cache查找</div></div>
+  <div class="p"><div class="bar"></div><div class="lbl">发送总线</div></div>
+  <div class="p"><div class="bar"></div><div class="lbl">内存读取</div></div>
+  <div class="p"><div class="bar"></div><div class="lbl">数据回传</div></div>
+  <div class="p"><div class="bar"></div><div class="lbl">写入寄存器</div></div>
+  <div class="p"><div class="bar"></div><div class="lbl">PC递增</div></div>
+</div>
+
+<div class="step-info">
+  <div class="step-card" id="stepCard">
+    <div class="step-title" id="stepTitle">点击「下一步」开始演示</div>
+    <div class="step-desc" id="stepDesc">本演示将逐步展示 CPU 执行 <code>MOV EAX, [0x1000]</code> 指令时，地址信号如何经总线到达内存，内存如何将数据回传到 CPU 寄存器的完整过程。</div>
+  </div>
+</div>
+
+<div class="diagram">
+  <svg class="scene" viewBox="0 0 1100 520" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="aBlue" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8" fill="var(--blue)"/></marker>
+      <marker id="aAmber" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8" fill="var(--amber)"/></marker>
+      <marker id="aGreen" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8" fill="var(--green)"/></marker>
+      <linearGradient id="cpuG" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#1a2744"/><stop offset="100%" stop-color="#111c30"/></linearGradient>
+      <linearGradient id="memG" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#1a2020"/><stop offset="100%" stop-color="#111a18"/></linearGradient>
+      <filter id="gBlue"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <filter id="gAmber"><feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#fbbf24" flood-opacity=".6"/></filter>
+      <filter id="gGreen"><feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#34d399" flood-opacity=".6"/></filter>
+    </defs>
+
+    <!-- ========== CPU ========== -->
+    <g id="cpuGroup">
+      <rect x="15" y="15" width="460" height="490" rx="10" fill="url(#cpuG)" stroke="#2a4a6a" stroke-width="2"/>
+      <text x="245" y="46" text-anchor="middle" fill="#7a9aba" font-size="20" font-weight="700">C P U</text>
+
+      <!-- CU -->
+      <rect x="35" y="60" width="200" height="105" rx="6" fill="#0f1a2e" stroke="#1e3a5a" stroke-width="1.5" id="cu-box"/>
+      <text x="135" y="85" text-anchor="middle" fill="var(--blue)" font-size="16" font-weight="700">控制单元 CU</text>
+      <text x="135" y="106" text-anchor="middle" fill="#4a6080" font-size="13">指令译码 · 控制信号</text>
+      <!-- PC -->
+      <rect x="48" y="118" width="82" height="34" rx="4" fill="#0a1020" stroke="#1e3a5a" id="pc-box"/>
+      <text x="58" y="140" fill="#7a8a9a" font-size="14" font-weight="600">PC</text>
+      <text x="122" y="141" text-anchor="end" fill="#c8d6e5" font-size="15" font-family="Consolas,monospace" font-weight="700" id="pc-val">0x0040</text>
+      <!-- IR -->
+      <rect x="140" y="118" width="82" height="34" rx="4" fill="#0a1020" stroke="#1e3a5a" id="ir-box"/>
+      <text x="150" y="140" fill="#7a8a9a" font-size="14" font-weight="600">IR</text>
+      <text x="214" y="141" text-anchor="end" fill="#c8d6e5" font-size="14" font-family="Consolas,monospace" font-weight="700" id="ir-val">--------</text>
+
+      <!-- ALU -->
+      <rect x="250" y="60" width="210" height="105" rx="6" fill="#0f1a2e" stroke="#1e3a5a" stroke-width="1.5" id="alu-box"/>
+      <text x="355" y="85" text-anchor="middle" fill="var(--green)" font-size="16" font-weight="700">算术逻辑单元 ALU</text>
+      <text x="355" y="106" text-anchor="middle" fill="#4a6080" font-size="13">地址计算 · 运算</text>
+      <rect x="268" y="118" width="174" height="34" rx="4" fill="#0a1020" stroke="#1e3a5a" id="alu-result-box"/>
+      <text x="278" y="140" fill="#7a8a9a" font-size="13" font-weight="600">Result</text>
+      <text x="434" y="141" text-anchor="end" fill="#c8d6e5" font-size="15" font-family="Consolas,monospace" font-weight="700" id="alu-val">--------</text>
+
+      <!-- Register File -->
+      <rect x="35" y="180" width="425" height="110" rx="6" fill="#0f1a2e" stroke="#2a3a5a" stroke-width="1.5" id="regfile-box"/>
+      <text x="248" y="202" text-anchor="middle" fill="var(--purple)" font-size="16" font-weight="700">寄存器文件  Register File</text>
+
+      <g id="reg-eax">
+        <rect x="48" y="214" width="95" height="34" rx="4" fill="#0a1020" stroke="#1e3a5a"/>
+        <text x="56" y="236" fill="#7a8a9a" font-size="14" font-weight="700">EAX</text>
+        <text x="136" y="236" text-anchor="end" fill="#c8d6e5" font-size="14" font-family="Consolas,monospace" font-weight="700" id="eax-val">00000000</text>
+        <text x="96" y="258" text-anchor="middle" fill="#334155" font-size="10">累加器</text>
+      </g>
+      <g id="reg-ebx">
+        <rect x="152" y="214" width="95" height="34" rx="4" fill="#0a1020" stroke="#1e3a5a"/>
+        <text x="160" y="236" fill="#7a8a9a" font-size="14" font-weight="700">EBX</text>
+        <text x="240" y="236" text-anchor="end" fill="#c8d6e5" font-size="14" font-family="Consolas,monospace" font-weight="700">00001000</text>
+        <text x="200" y="258" text-anchor="middle" fill="#334155" font-size="10">基址</text>
+      </g>
+      <g id="reg-ecx">
+        <rect x="256" y="214" width="95" height="34" rx="4" fill="#0a1020" stroke="#1e3a5a"/>
+        <text x="264" y="236" fill="#7a8a9a" font-size="14" font-weight="700">ECX</text>
+        <text x="344" y="236" text-anchor="end" fill="#c8d6e5" font-size="14" font-family="Consolas,monospace" font-weight="700">00000004</text>
+        <text x="304" y="258" text-anchor="middle" fill="#334155" font-size="10">计数</text>
+      </g>
+      <g id="reg-edx">
+        <rect x="360" y="214" width="95" height="34" rx="4" fill="#0a1020" stroke="#1e3a5a"/>
+        <text x="368" y="236" fill="#7a8a9a" font-size="14" font-weight="700">EDX</text>
+        <text x="448" y="236" text-anchor="end" fill="#c8d6e5" font-size="14" font-family="Consolas,monospace" font-weight="700">00000000</text>
+        <text x="408" y="258" text-anchor="middle" fill="#334155" font-size="10">数据</text>
+      </g>
+
+      <!-- MAR / MDR -->
+      <rect x="35" y="300" width="425" height="75" rx="6" fill="#0f1a2e" stroke="#2a3a5a" stroke-width="1.5" id="marmdr-box"/>
+      <text x="248" y="322" text-anchor="middle" fill="var(--amber)" font-size="16" font-weight="700">地址/数据缓冲寄存器</text>
+
+      <g id="reg-mar">
+        <rect x="48" y="332" width="195" height="34" rx="4" fill="#0a1020" stroke="#1e3a5a"/>
+        <text x="58" y="354" fill="#7a8a9a" font-size="14" font-weight="600">MAR 地址</text>
+        <text x="235" y="354" text-anchor="end" fill="#c8d6e5" font-size="16" font-family="Consolas,monospace" font-weight="700" id="mar-val">--------</text>
+      </g>
+      <g id="reg-mdr">
+        <rect x="255" y="332" width="195" height="34" rx="4" fill="#0a1020" stroke="#1e3a5a"/>
+        <text x="265" y="354" fill="#7a8a9a" font-size="14" font-weight="600">MDR 数据</text>
+        <text x="442" y="354" text-anchor="end" fill="#c8d6e5" font-size="16" font-family="Consolas,monospace" font-weight="700" id="mdr-val">--------</text>
+      </g>
+
+      <!-- L1 Cache -->
+      <rect x="35" y="390" width="425" height="55" rx="6" fill="#0f1a2e" stroke="#2a3a5a" stroke-width="1.5" id="cache-box"/>
+      <text x="248" y="413" text-anchor="middle" fill="var(--orange)" font-size="15" font-weight="700">L1 D-Cache  32KB</text>
+      <rect x="48" y="420" width="90" height="18" rx="3" fill="#0a1020" stroke="#1e3050" id="cl0"/><text x="93" y="433" text-anchor="middle" fill="#475569" font-size="11" id="cl0t">Line 0</text>
+      <rect x="148" y="420" width="90" height="18" rx="3" fill="#0a1020" stroke="#1e3050" id="cl1"/><text x="193" y="433" text-anchor="middle" fill="#475569" font-size="11" id="cl1t">Line 1</text>
+      <rect x="248" y="420" width="90" height="18" rx="3" fill="#0a1020" stroke="#1e3050" id="cl2"/><text x="293" y="433" text-anchor="middle" fill="#475569" font-size="11">Line 2</text>
+      <rect x="348" y="420" width="90" height="18" rx="3" fill="#0a1020" stroke="#1e3050" id="cl3"/><text x="393" y="433" text-anchor="middle" fill="#475569" font-size="11">...</text>
+
+      <!-- I-Cache -->
+      <rect x="35" y="456" width="425" height="40" rx="6" fill="#0f1a2e" stroke="#2a3a5a" stroke-width="1.5" id="icache-box"/>
+      <text x="248" y="481" text-anchor="middle" fill="#818cf8" font-size="14" font-weight="700">L1 I-Cache  32KB  ·  指令缓存</text>
+
+      <!-- Cache Miss/Hit badge -->
+      <g id="cache-status" opacity="0">
+        <rect x="170" y="400" width="70" height="22" rx="11" id="cache-badge" fill="#ef4444"/>
+        <text x="205" y="415" text-anchor="middle" fill="#fff" font-size="13" font-weight="800" id="cache-badge-t">MISS</text>
+      </g>
+    </g>
+
+    <!-- ========== 系统总线 ========== -->
+    <g id="busGroup">
+      <rect x="490" y="30" width="80" height="470" rx="6" fill="rgba(96,165,250,.06)" stroke="#1e3a5a" stroke-width="1.5"/>
+      <text x="530" y="24" text-anchor="middle" fill="#4a6a8a" font-size="15" font-weight="700">系统总线</text>
+
+      <line x1="510" y1="50" x2="510" y2="490" stroke="var(--blue)" stroke-width="2.5" stroke-dasharray="6,4" opacity=".25" id="addr-bus"/>
+      <text x="508" y="66" fill="var(--blue)" font-size="12" text-anchor="end" opacity=".6" font-weight="700">地址</text>
+
+      <line x1="530" y1="50" x2="530" y2="490" stroke="var(--amber)" stroke-width="2.5" stroke-dasharray="6,4" opacity=".25" id="data-bus"/>
+      <text x="530" y="66" fill="var(--amber)" font-size="12" text-anchor="middle" opacity=".6" font-weight="700">数据</text>
+
+      <line x1="550" y1="50" x2="550" y2="490" stroke="var(--green)" stroke-width="2.5" stroke-dasharray="6,4" opacity=".25" id="ctrl-bus"/>
+      <text x="552" y="66" fill="var(--green)" font-size="12" opacity=".6" font-weight="700">控制</text>
+    </g>
+
+    <!-- ========== 内存 ========== -->
+    <g id="memGroup">
+      <rect x="585" y="15" width="500" height="490" rx="10" fill="url(#memG)" stroke="#2a4a3a" stroke-width="2"/>
+      <text x="835" y="46" text-anchor="middle" fill="#5e8a6a" font-size="20" font-weight="700">主存储器  RAM</text>
+
+      <!-- Memory Controller -->
+      <rect x="605" y="60" width="460" height="60" rx="6" fill="#0f1a1a" stroke="#2a4a3a" stroke-width="1.5" id="memctrl-box"/>
+      <text x="835" y="86" text-anchor="middle" fill="#2dd4bf" font-size="16" font-weight="700">内存控制器  Memory Controller</text>
+      <text x="835" y="108" text-anchor="middle" fill="#4a6a5a" font-size="13">地址译码  →  行/列选通  →  数据输出</text>
+
+      <!-- .text -->
+      <rect x="605" y="135" width="460" height="120" rx="6" fill="#0f1a1a" stroke="#2a3a3a"/>
+      <text x="835" y="158" text-anchor="middle" fill="#818cf8" font-size="16" font-weight="700">.text  代码段</text>
+      <g font-family="Consolas,'Courier New',monospace">
+        <rect x="620" y="168" width="430" height="26" rx="3" fill="#0a1218" stroke="#1e2830" stroke-width="1.5" id="mem-0040"/>
+        <text x="632" y="186" fill="#5a6a7a" font-size="14" font-weight="600">0x0040:</text>
+        <text x="720" y="186" fill="#818cf8" font-size="15" font-weight="700" id="mem-0040-v">8B 05 00 10 00 00</text>
+        <text x="920" y="186" fill="#4a5a6a" font-size="13">MOV EAX, [0x1000]</text>
+        <rect x="620" y="200" width="430" height="26" rx="3" fill="#0a1218" stroke="#1e2830" stroke-width="1.5"/>
+        <text x="632" y="218" fill="#5a6a7a" font-size="14" font-weight="600">0x0046:</text>
+        <text x="720" y="218" fill="#818cf8" font-size="15" font-weight="700">83 C0 01</text>
+        <text x="920" y="218" fill="#4a5a6a" font-size="13">ADD EAX, 1</text>
+        <text x="632" y="248" fill="#334155" font-size="13">...</text>
+      </g>
+
+      <!-- .data -->
+      <rect x="605" y="268" width="460" height="130" rx="6" fill="#0f1a1a" stroke="#2a3a3a"/>
+      <text x="835" y="291" text-anchor="middle" fill="var(--amber)" font-size="16" font-weight="700">.data  数据段</text>
+      <g font-family="Consolas,'Courier New',monospace">
+        <rect x="620" y="302" width="430" height="26" rx="3" fill="#0a1218" stroke="#1e2830" stroke-width="1.5"/>
+        <text x="632" y="320" fill="#5a6a7a" font-size="14" font-weight="600">0x0FFC:</text>
+        <text x="730" y="320" fill="#8a9aaa" font-size="15" font-weight="600">FF FF FF FF</text>
+        <text x="920" y="320" fill="#4a5a6a" font-size="13">-1</text>
+
+        <rect x="620" y="334" width="430" height="26" rx="3" fill="#0a1218" stroke="#1e2830" stroke-width="1.5" id="mem-1000"/>
+        <text x="632" y="352" fill="#5a6a7a" font-size="14" font-weight="600">0x1000:</text>
+        <text x="730" y="352" fill="var(--amber)" font-size="16" font-weight="800" id="mem-1000-v">42 00 00 00</text>
+        <text x="920" y="352" fill="#6a7a5a" font-size="14" font-weight="700" id="mem-1000-c">值 = 0x42</text>
+
+        <rect x="620" y="366" width="430" height="26" rx="3" fill="#0a1218" stroke="#1e2830" stroke-width="1.5"/>
+        <text x="632" y="384" fill="#5a6a7a" font-size="14" font-weight="600">0x1004:</text>
+        <text x="730" y="384" fill="#8a9aaa" font-size="15" font-weight="600">DE AD BE EF</text>
+      </g>
+
+      <!-- Stack -->
+      <rect x="605" y="410" width="460" height="42" rx="6" fill="#0f1a1a" stroke="#2a3a3a"/>
+      <text x="835" y="436" text-anchor="middle" fill="var(--red)" font-size="15" font-weight="700">Stack 栈区  ·  0x7FFFF000 – 0x7FFFFFFF</text>
+
+      <!-- Heap -->
+      <rect x="605" y="460" width="460" height="36" rx="6" fill="#0a1218" stroke="#1e2830" stroke-dasharray="5,3"/>
+      <text x="835" y="483" text-anchor="middle" fill="#334155" font-size="14">Heap 堆区 / 映射区</text>
+    </g>
+
+    <!-- ========== 动态箭头 ========== -->
+    <g id="arrows">
+      <path id="arrow-fetch" d="M135,152 L135,476" stroke="#818cf8" stroke-width="3" fill="none" stroke-dasharray="8,5" opacity="0" marker-end="url(#aBlue)"/>
+      <path id="arrow-addr" d="M460,349 L510,349 L510,90 L605,90" stroke="var(--blue)" stroke-width="3.5" fill="none" stroke-dasharray="10,5" opacity="0" marker-end="url(#aBlue)"/>
+      <path id="arrow-data" d="M605,347 L530,347 L530,349 L460,349" stroke="var(--amber)" stroke-width="3.5" fill="none" stroke-dasharray="10,5" opacity="0" marker-end="url(#aAmber)"/>
+      <path id="arrow-mdr-eax" d="M350,332 L350,290 L96,290 L96,248" stroke="var(--green)" stroke-width="3" fill="none" stroke-dasharray="8,5" opacity="0" marker-end="url(#aGreen)"/>
+      <path id="arrow-alu-mar" d="M355,152 L355,175 L145,175 L145,332" stroke="var(--green)" stroke-width="2.5" fill="none" stroke-dasharray="7,4" opacity="0" marker-end="url(#aGreen)"/>
+      <path id="arrow-ctrl" d="M460,100 L550,100 L550,90 L605,90" stroke="var(--green)" stroke-width="2.5" fill="none" stroke-dasharray="7,4" opacity="0" marker-end="url(#aGreen)"/>
+      <path id="arrow-cache-fill" d="M350,366 L350,390 L193,390 L193,420" stroke="var(--orange)" stroke-width="2.5" fill="none" stroke-dasharray="7,4" opacity="0" marker-end="url(#aAmber)"/>
+    </g>
+
+    <!-- ========== 数据包 ========== -->
+    <g id="packets">
+      <rect id="pkt-addr" x="-200" y="-200" width="80" height="24" rx="4" fill="var(--blue)" opacity="0"/>
+      <text id="pkt-addr-t" x="-200" y="-200" fill="#0b1120" font-size="13" font-weight="800" text-anchor="middle">0x1000</text>
+      <rect id="pkt-data" x="-200" y="-200" width="70" height="24" rx="4" fill="var(--amber)" opacity="0"/>
+      <text id="pkt-data-t" x="-200" y="-200" fill="#0b1120" font-size="13" font-weight="800" text-anchor="middle">0x42</text>
+      <rect id="pkt-ctrl" x="-200" y="-200" width="50" height="22" rx="4" fill="var(--green)" opacity="0"/>
+      <text id="pkt-ctrl-t" x="-200" y="-200" fill="#0b1120" font-size="12" font-weight="800" text-anchor="middle">RD</text>
+    </g>
+  </svg>
+</div>
+
+<!-- ========== 底部面板 ========== -->
+<div class="panels">
+  <div class="panel">
+    <h3>关键寄存器状态</h3>
+    <div class="reg-grid" id="regPanel">
+      <div class="reg-item" id="sp-eax"><div class="name">EAX 累加器</div><div class="val" id="sp-eax-v">0x00000000</div></div>
+      <div class="reg-item" id="sp-ebx"><div class="name">EBX 基址</div><div class="val">0x00001000</div></div>
+      <div class="reg-item" id="sp-pc"><div class="name">PC 程序计数器</div><div class="val" id="sp-pc-v">0x0040</div></div>
+      <div class="reg-item" id="sp-ir"><div class="name">IR 指令寄存器</div><div class="val" id="sp-ir-v">--------</div></div>
+      <div class="reg-item" id="sp-mar"><div class="name">MAR 地址寄存器</div><div class="val" id="sp-mar-v">--------</div></div>
+      <div class="reg-item" id="sp-mdr"><div class="name">MDR 数据寄存器</div><div class="val" id="sp-mdr-v">--------</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>目标内存区域</h3>
+    <div class="mem-grid" id="memPanel">
+      <div class="mem-cell" id="mc-0ffc"><div class="addr">0x0FFC</div><div class="data">0xFFFFFFFF</div></div>
+      <div class="mem-cell" id="mc-1000"><div class="addr">0x1000</div><div class="data">0x00000042</div></div>
+      <div class="mem-cell" id="mc-1004"><div class="addr">0x1004</div><div class="data">0xDEADBEEF</div></div>
+      <div class="mem-cell" id="mc-1008"><div class="addr">0x1008</div><div class="data">0x00000000</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>执行日志</h3>
+    <div class="log-box" id="logBox"></div>
+  </div>
+</div>
+
+<div class="legend">
+  <div class="legend-inner">
+    <span><span class="dot" style="background:var(--blue)"></span>地址总线 Address Bus</span>
+    <span><span class="dot" style="background:var(--amber)"></span>数据总线 Data Bus</span>
+    <span><span class="dot" style="background:var(--green)"></span>控制总线 Control Bus</span>
+    <span><span class="dot" style="background:#818cf8"></span>指令流</span>
+    <span><span class="dot" style="background:var(--purple)"></span>寄存器</span>
+    <span style="margin-left:16px;color:#475569">键盘: → 下一步 · ← 上一步 · A 自动 · R 重置</span>
+  </div>
+</div>
+
+<script>
+const STEPS=[
+{
+  title:'① 取指  Fetch',
+  desc:'<code>PC = 0x0040</code> 指向当前指令地址。CPU 通过 I-Cache 或内存取回该地址处的机器码 <code>8B 05 00 10 00 00</code>（6 字节），写入指令寄存器 IR。',
+  log:'取指：PC=0x0040 → I-Cache → IR = 8B 05 00 10 00 00',
+  action(f){
+    flash('pc-box','blue'); flash('icache-box','blue'); flash('mem-0040','blue');
+    showArr('arrow-fetch');
+    if(f){ setV('ir-val','8B0500..'); setV('ir-box',null,'#818cf8'); setP('sp-ir-v','MOV EAX,[M]'); hl('sp-pc'); hl('sp-ir'); }
+  },
+  cleanup(){ hideArr('arrow-fetch'); unfl('pc-box'); unfl('icache-box'); unfl('mem-0040'); uhl('sp-pc'); uhl('sp-ir'); }
+},
+{
+  title:'② 译码  Decode',
+  desc:'控制单元 CU 解析 IR 中的机器码：操作码 <code>8B</code> = MOV r32, m32；ModR/M 字节 <code>05</code> 表示目标为 <code>EAX</code>，寻址模式为直接寻址；后 4 字节 <code>00 10 00 00</code> 为小端序偏移地址 = <code>0x00001000</code>。',
+  log:'译码：8B→MOV, 05→EAX, 寻址=直接, 偏移=0x1000',
+  action(f){ flash('cu-box','blue'); flash('ir-box','blue'); if(f) setV('ir-val','MOV EAX,[M]'); },
+  cleanup(){ unfl('cu-box'); unfl('ir-box'); }
+},
+{
+  title:'③ 计算有效地址  Address Calculation',
+  desc:'ALU 接收译码结果，计算有效地址（EA）。本例为直接寻址，EA = <code>0x0000 + 0x1000 = 0x00001000</code>。若为基址+变址寻址，ALU 还需执行加法运算。',
+  log:'ALU 计算：base 0x0000 + offset 0x1000 → EA = 0x00001000',
+  action(f){ flash('alu-box','green'); flash('alu-result-box','green'); if(f) setV('alu-val','0x00001000'); },
+  cleanup(){ unfl('alu-box'); unfl('alu-result-box'); }
+},
+{
+  title:'④ 地址装入 MAR',
+  desc:'ALU 计算得到的有效地址 <code>0x00001000</code> 写入 MAR（Memory Address Register，内存地址寄存器）。MAR 是 CPU 与地址总线之间的接口，下一步将驱动地址总线。',
+  log:'ALU → MAR：有效地址 0x00001000 装入 MAR',
+  action(f){
+    showArr('arrow-alu-mar'); flash('reg-mar','amber');
+    if(f){ setV('mar-val','0x00001000'); setP('sp-mar-v','0x00001000'); hl('sp-mar'); }
+  },
+  cleanup(){ hideArr('arrow-alu-mar'); unfl('reg-mar'); uhl('sp-mar'); }
+},
+{
+  title:'⑤ 查找 L1 Cache',
+  desc:'CPU 先在 L1 D-Cache（数据缓存）中查找地址 <code>0x1000</code>。将地址拆分为 Tag / Set Index / Offset 三部分进行匹配 → <strong style="color:#f87171">Cache Miss!</strong> 该缓存行不存在，必须访问主存。',
+  log:'L1 Cache 查找：Tag=0x001, Set=0x00 → MISS!',
+  action(f){
+    flash('cache-box','red'); flash('cl0','red');
+    const b=document.getElementById('cache-status'); b.style.opacity='1';
+    document.getElementById('cache-badge').setAttribute('fill','#ef4444');
+    document.getElementById('cache-badge-t').textContent='MISS';
+  },
+  cleanup(){ unfl('cache-box'); unfl('cl0'); document.getElementById('cache-status').style.opacity='0'; }
+},
+{
+  title:'⑥ 地址 + 读信号 → 系统总线',
+  desc:'Cache 未命中，CPU 将 MAR 中的 <code>0x1000</code> 放上<strong style="color:var(--blue)">地址总线</strong>；同时 CU 在<strong style="color:var(--green)">控制总线</strong>发出 <code>RD</code>（读）信号。内存控制器接收到地址和控制信号后开始工作。',
+  log:'地址总线 ← 0x1000，控制总线 ← RD，内存控制器开始译码',
+  action(f){
+    showArr('arrow-addr'); showArr('arrow-ctrl');
+    flash('addr-bus','blue'); flash('ctrl-bus','green'); flash('memctrl-box','green');
+    animPkt('pkt-addr','pkt-addr-t',[{x:460,y:340},{x:510,y:340},{x:510,y:82},{x:605,y:82}],'0x1000');
+    animPkt('pkt-ctrl','pkt-ctrl-t',[{x:460,y:92},{x:550,y:92},{x:550,y:82},{x:605,y:82}],'RD');
+  },
+  cleanup(){ hideArr('arrow-addr'); hideArr('arrow-ctrl'); unfl('addr-bus'); unfl('ctrl-bus'); unfl('memctrl-box'); hidePkt('pkt-addr','pkt-addr-t'); hidePkt('pkt-ctrl','pkt-ctrl-t'); }
+},
+{
+  title:'⑦ 内存响应：读取数据',
+  desc:'内存控制器对地址 <code>0x1000</code> 进行行/列译码：<strong>RAS</strong>（行选通）→ <strong>CAS</strong>（列选通）→ 从 DRAM 存储单元读出数据 <code>0x00000042</code>。此过程约 CL 延迟 10-20ns。',
+  log:'内存响应：RAS → CAS → 读出 0x1000 = 0x00000042',
+  action(f){ flash('mem-1000','amber'); flash('memctrl-box','amber'); document.getElementById('mc-1000').classList.add('highlight'); },
+  cleanup(){ unfl('mem-1000'); unfl('memctrl-box'); document.getElementById('mc-1000').classList.remove('highlight'); }
+},
+{
+  title:'⑧ 数据通过数据总线回传 → MDR',
+  desc:'内存将读出的数据 <code>0x00000042</code> 放上<strong style="color:var(--amber)">数据总线</strong> → 经总线传输 → 写入 CPU 的 MDR（Memory Data Register，内存数据寄存器）。MDR 现在持有从内存取回的值。',
+  log:'数据总线 ← 0x00000042，写入 MDR = 0x00000042',
+  action(f){
+    showArr('arrow-data'); flash('data-bus','amber'); flash('reg-mdr','amber');
+    animPkt('pkt-data','pkt-data-t',[{x:605,y:340},{x:530,y:340},{x:530,y:342},{x:460,y:342}],'0x42');
+    if(f){ setV('mdr-val','0x00000042'); setP('sp-mdr-v','0x00000042'); hl('sp-mdr'); }
+  },
+  cleanup(){ hideArr('arrow-data'); unfl('data-bus'); unfl('reg-mdr'); uhl('sp-mdr'); hidePkt('pkt-data','pkt-data-t'); }
+},
+{
+  title:'⑨ Cache 回填 + 数据写入 EAX',
+  desc:'数据从 MDR 完成两件事：① <strong style="color:var(--orange)">回填 L1 Cache</strong>（Line 1 ← tag:0x001, data:0x42...），下次访问将命中；② <strong style="color:var(--green)">写入目标寄存器 EAX</strong> = <code>0x00000042</code>。指令的核心目标达成！',
+  log:'Cache 回填 Line1 ← 0x42；EAX ← MDR = 0x00000042',
+  action(f){
+    showArr('arrow-mdr-eax'); showArr('arrow-cache-fill');
+    flash('reg-eax','green'); flash('cl1','amber');
+    const b=document.getElementById('cache-status'); b.style.opacity='1';
+    document.getElementById('cache-badge').setAttribute('fill','#22c55e');
+    document.getElementById('cache-badge-t').textContent='FILL';
+    if(f){
+      setV('eax-val','00000042'); setP('sp-eax-v','0x00000042'); hl('sp-eax');
+      document.getElementById('cl1t').textContent='0x1000:42';
+      document.getElementById('cl1').setAttribute('fill','#1a1500');
+      document.getElementById('cl1').setAttribute('stroke','var(--orange)');
+    }
+  },
+  cleanup(){ hideArr('arrow-mdr-eax'); hideArr('arrow-cache-fill'); unfl('reg-eax'); unfl('cl1'); uhl('sp-eax'); document.getElementById('cache-status').style.opacity='0'; }
+},
+{
+  title:'⑩ PC 递增 → 准备下一条指令',
+  desc:'本条 MOV 指令长 6 字节。<code>PC += 6</code> → <code>PC = 0x0046</code>，指向下一条指令 <code>ADD EAX, 1</code>。一条完整的内存读取指令执行完毕，CPU 进入下一轮取指-执行循环。',
+  log:'指令完成！PC = 0x0040 + 6 = 0x0046 → 下一条: ADD EAX, 1',
+  action(f){ flash('pc-box','green'); if(f){ setV('pc-val','0x0046'); setP('sp-pc-v','0x0046'); hl('sp-pc'); } },
+  cleanup(){ unfl('pc-box'); uhl('sp-pc'); }
+}
+];
+
+let step=-1,autoT=null;
+
+function nextStep(){if(step>=0&&step<STEPS.length)STEPS[step].cleanup();step++;if(step>=STEPS.length){step=STEPS.length-1;return}apply(true)}
+function prevStep(){if(step<0)return;STEPS[step].cleanup();step--;if(step<0){step=-1;updUI();return}replay(step)}
+function replay(t){resetState();for(let i=0;i<=t;i++){STEPS[i].action(true);if(i<t)STEPS[i].cleanup()}updUI()}
+function apply(f){STEPS[step].action(f);addLog(STEPS[step].log);updUI()}
+function updUI(){
+  const l=document.getElementById('stepLabel');
+  l.textContent=step<0?'准备就绪':`步骤 ${step+1} / ${STEPS.length}`;
+  document.querySelectorAll('.phase-bar .bar').forEach((b,i)=>{b.classList.remove('done','current');if(i<step)b.classList.add('done');else if(i===step)b.classList.add('current')});
+  document.getElementById('btnPrev').disabled=step<0;
+  document.getElementById('btnNext').disabled=step>=STEPS.length-1;
+  const card=document.getElementById('stepCard');
+  if(step>=0){
+    card.classList.add('active');
+    document.getElementById('stepTitle').textContent=STEPS[step].title;
+    document.getElementById('stepDesc').innerHTML=STEPS[step].desc;
+  }else{
+    card.classList.remove('active');
+    document.getElementById('stepTitle').textContent='点击「下一步」开始演示';
+    document.getElementById('stepDesc').innerHTML='本演示将逐步展示 CPU 执行 <code>MOV EAX, [0x1000]</code> 指令时，地址信号如何经总线到达内存，内存如何将数据回传到 CPU 寄存器的完整过程。';
+  }
+}
+function resetAll(){stopAuto();if(step>=0&&step<STEPS.length)STEPS[step].cleanup();step=-1;resetState();document.getElementById('logBox').innerHTML='';updUI()}
+function resetState(){
+  setV('pc-val','0x0040');setV('ir-val','--------');setV('alu-val','--------');
+  setV('mar-val','--------');setV('mdr-val','--------');setV('eax-val','00000000');
+  setP('sp-eax-v','0x00000000');setP('sp-pc-v','0x0040');setP('sp-ir-v','--------');setP('sp-mar-v','--------');setP('sp-mdr-v','--------');
+  document.getElementById('cl1t').textContent='Line 1';
+  document.getElementById('cl1').setAttribute('fill','#0a1020');
+  document.getElementById('cl1').setAttribute('stroke','#1e3050');
+  document.getElementById('cache-status').style.opacity='0';
+  ['arrow-fetch','arrow-addr','arrow-data','arrow-mdr-eax','arrow-alu-mar','arrow-ctrl','arrow-cache-fill'].forEach(hideArr);
+  ['pkt-addr','pkt-data','pkt-ctrl'].forEach(id=>hidePkt(id,id+'-t'));
+}
+function toggleAuto(){if(autoT){stopAuto();return}document.getElementById('btnAuto').textContent='⏸ 暂停';document.getElementById('btnAuto').classList.add('active');autoT=setInterval(()=>{if(step>=STEPS.length-1){stopAuto();return}nextStep()},2800)}
+function stopAuto(){clearInterval(autoT);autoT=null;document.getElementById('btnAuto').textContent='▶ 自动播放';document.getElementById('btnAuto').classList.remove('active')}
+
+const colorMap={blue:'gBlue',green:'gGreen',amber:'gAmber',red:'gAmber'};
+const strokeMap={blue:'var(--blue)',green:'var(--green)',amber:'var(--amber)',red:'var(--red)'};
+function flash(id,c){const e=document.getElementById(id);if(!e)return;e.setAttribute('stroke',strokeMap[c]);e.setAttribute('filter',`url(#${colorMap[c]})`)}
+function unfl(id){const e=document.getElementById(id);if(!e)return;e.removeAttribute('filter');e.setAttribute('stroke',e.dataset.os||'#1e3a5a')}
+function setV(id,t,s){if(t)document.getElementById(id).textContent=t;if(s)document.getElementById(id).setAttribute('stroke',s)}
+function setP(id,t){document.getElementById(id).textContent=t}
+function hl(id){document.getElementById(id).classList.add('highlight')}
+function uhl(id){document.getElementById(id).classList.remove('highlight')}
+function showArr(id){const e=document.getElementById(id);e.style.opacity='1';const l=e.getTotalLength();e.style.strokeDasharray=l;e.style.strokeDashoffset=l;e.style.transition='none';e.getBoundingClientRect();e.style.transition='stroke-dashoffset 0.9s ease-in-out';e.style.strokeDashoffset='0'}
+function hideArr(id){const e=document.getElementById(id);if(e){e.style.opacity='0';e.style.transition='none'}}
+function animPkt(rId,tId,wp,label){
+  const r=document.getElementById(rId),t=document.getElementById(tId);if(!r||!t||wp.length<2)return;
+  r.style.opacity='1';t.style.opacity='1';t.textContent=label;
+  const rw=+r.getAttribute('width'),rh=+r.getAttribute('height'),dur=900,start=performance.now(),segs=wp.length-1;
+  (function fr(now){
+    const p=Math.min((now-start)/dur,1),sf=p*segs,si=Math.min(Math.floor(sf),segs-1),sp=sf-si;
+    const x=wp[si].x+(wp[si+1].x-wp[si].x)*sp,y=wp[si].y+(wp[si+1].y-wp[si].y)*sp;
+    r.setAttribute('x',x-rw/2);r.setAttribute('y',y-rh/2);t.setAttribute('x',x);t.setAttribute('y',y+5);
+    if(p<1)requestAnimationFrame(fr);else{r.style.opacity='0';t.style.opacity='0'}
+  })(performance.now());
+}
+function hidePkt(rId,tId){const r=document.getElementById(rId),t=document.getElementById(tId);if(r){r.style.opacity='0';r.setAttribute('x',-200)}if(t){t.style.opacity='0';t.setAttribute('x',-200)}}
+
+let logN=0;
+function addLog(m){logN++;const b=document.getElementById('logBox'),d=document.createElement('div');d.className='log-line active';d.innerHTML=`<span class="time">T${logN}</span>${m}`;b.prepend(d);setTimeout(()=>d.classList.remove('active'),2000)}
+
+document.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('[id]').forEach(e=>{const s=e.getAttribute('stroke');if(s)e.dataset.os=s});updUI()});
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();nextStep()}else if(e.key==='ArrowLeft'){e.preventDefault();prevStep()}else if(e.key==='r'||e.key==='R')resetAll();else if(e.key==='a'||e.key==='A')toggleAuto()});
+</script>
+</body>
+</html>
