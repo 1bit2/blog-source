@@ -1,0 +1,229 @@
+/**
+ * ============================================================================
+ * 桥接模式 (Bridge Pattern) - 结构型设计模式
+ * ============================================================================
+ *
+ * 【解决的问题】
+ *
+ * 当一个类存在两个（或多个）独立变化的维度时，如果只用继承来扩展，
+ * 会导致类的数量爆炸（M x N 个子类）。例如：
+ *
+ *   - 形状：圆形、方形、三角形
+ *   - 渲染平台：OpenGL、Vulkan、Software
+ *
+ *   纯继承方案需要 3 x 3 = 9 个类：OpenGLCircle, VulkanCircle, ...
+ *   每增加一种形状或平台，类数量急剧增长。
+ *
+ * 桥接模式将"抽象"和"实现"分离到两个独立的继承体系中，用组合（聚合）
+ * 连接它们，使两者可以独立变化。
+ *
+ * 【核心思想】
+ *
+ *   Abstraction（抽象层）  ──has-a──>  Implementor（实现层接口）
+ *        ↑                                  ↑
+ *   RefinedAbstraction             ConcreteImplementor
+ *
+ *   - Abstraction 持有 Implementor 的引用
+ *   - 客户端面向 Abstraction 编程
+ *   - 新增形状只需继承 Abstraction，新增平台只需继承 Implementor
+ *   - 类的数量从 M x N 降到 M + N
+ *
+ * 【典型场景】
+ *   - 跨平台 GUI（窗口抽象 + 平台渲染实现）
+ *   - 数据库驱动（查询接口 + 具体数据库实现）
+ *   - 消息发送（消息类型 + 发送渠道）
+ *
+ * 【与组合模式、中介者模式的区别】
+ *
+ *   桥接模式 (Bridge):
+ *     - 结构型模式
+ *     - 解决「多维度变化导致类爆炸」问题
+ *     - 将继承拆为两个独立体系，用组合连接
+ *     - 关注：解耦抽象和实现
+ *
+ *   组合模式 (Composite):
+ *     - 结构型模式
+ *     - 解决「树形结构中统一操作叶子和容器」问题
+ *     - 叶子和容器共享接口，递归嵌套
+ *     - 关注：统一处理部分-整体层次
+ *
+ *   中介者模式 (Mediator):
+ *     - 行为型模式
+ *     - 解决「多对象网状通信复杂」问题
+ *     - 引入中介者集中管理交互
+ *     - 关注：解耦对象间通信
+ *
+ * 【一句话总结】
+ *   桥接 → 拆分多维度变化（组合代替继承）
+ *   组合 → 统一树形结构操作（叶子=容器）
+ *   中介 → 收拢网状通信（多对多变一对多）
+ *
+ * ============================================================================
+ */
+
+#include <iostream>
+#include <string>
+#include <memory>
+
+// ============================================================================
+// Implementor: 渲染实现层接口
+// ============================================================================
+
+class Renderer {
+public:
+    virtual ~Renderer() = default;
+    virtual void renderCircle(float x, float y, float radius) = 0;
+    virtual void renderRect(float x, float y, float w, float h) = 0;
+    virtual std::string name() const = 0;
+};
+
+// ============================================================================
+// ConcreteImplementor A: OpenGL 渲染器
+// ============================================================================
+
+class OpenGLRenderer : public Renderer {
+public:
+    void renderCircle(float x, float y, float radius) override {
+        std::cout << "  [OpenGL] glDrawArrays(GL_TRIANGLE_FAN) circle"
+                  << " at (" << x << "," << y << ") r=" << radius << "\n";
+    }
+
+    void renderRect(float x, float y, float w, float h) override {
+        std::cout << "  [OpenGL] glDrawArrays(GL_TRIANGLE_STRIP) rect"
+                  << " at (" << x << "," << y << ") " << w << "x" << h << "\n";
+    }
+
+    std::string name() const override { return "OpenGL"; }
+};
+
+// ============================================================================
+// ConcreteImplementor B: Vulkan 渲染器
+// ============================================================================
+
+class VulkanRenderer : public Renderer {
+public:
+    void renderCircle(float x, float y, float radius) override {
+        std::cout << "  [Vulkan] vkCmdDraw() tessellated circle"
+                  << " at (" << x << "," << y << ") r=" << radius << "\n";
+    }
+
+    void renderRect(float x, float y, float w, float h) override {
+        std::cout << "  [Vulkan] vkCmdDraw() quad"
+                  << " at (" << x << "," << y << ") " << w << "x" << h << "\n";
+    }
+
+    std::string name() const override { return "Vulkan"; }
+};
+
+// ============================================================================
+// ConcreteImplementor C: 软件渲染器（CPU 模拟）
+// ============================================================================
+
+class SoftwareRenderer : public Renderer {
+public:
+    void renderCircle(float x, float y, float radius) override {
+        std::cout << "  [Software] rasterize circle via scanline"
+                  << " at (" << x << "," << y << ") r=" << radius << "\n";
+    }
+
+    void renderRect(float x, float y, float w, float h) override {
+        std::cout << "  [Software] rasterize rect via scanline"
+                  << " at (" << x << "," << y << ") " << w << "x" << h << "\n";
+    }
+
+    std::string name() const override { return "Software"; }
+};
+
+// ============================================================================
+// Abstraction: 形状抽象层
+// ============================================================================
+
+class Shape {
+public:
+    explicit Shape(std::shared_ptr<Renderer> renderer)
+        : renderer_(std::move(renderer)) {}
+
+    virtual ~Shape() = default;
+    virtual void draw() const = 0;
+
+    void setRenderer(std::shared_ptr<Renderer> renderer) {
+        renderer_ = std::move(renderer);
+    }
+
+protected:
+    std::shared_ptr<Renderer> renderer_;
+};
+
+// ============================================================================
+// RefinedAbstraction A: 圆形
+// ============================================================================
+
+class Circle : public Shape {
+public:
+    Circle(std::shared_ptr<Renderer> renderer, float x, float y, float radius)
+        : Shape(std::move(renderer)), x_(x), y_(y), radius_(radius) {}
+
+    void draw() const override {
+        renderer_->renderCircle(x_, y_, radius_);
+    }
+
+private:
+    float x_, y_, radius_;
+};
+
+// ============================================================================
+// RefinedAbstraction B: 矩形
+// ============================================================================
+
+class Rectangle : public Shape {
+public:
+    Rectangle(std::shared_ptr<Renderer> renderer, float x, float y, float w, float h)
+        : Shape(std::move(renderer)), x_(x), y_(y), w_(w), h_(h) {}
+
+    void draw() const override {
+        renderer_->renderRect(x_, y_, w_, h_);
+    }
+
+private:
+    float x_, y_, w_, h_;
+};
+
+// ============================================================================
+// Main: 演示形状和渲染平台独立变化
+// ============================================================================
+
+int main() {
+    std::cout << "\n";
+    std::cout << "####################################################\n";
+    std::cout << "#     Bridge Pattern - C++ Demonstration           #\n";
+    std::cout << "####################################################\n\n";
+
+    auto opengl   = std::make_shared<OpenGLRenderer>();
+    auto vulkan   = std::make_shared<VulkanRenderer>();
+    auto software = std::make_shared<SoftwareRenderer>();
+
+    std::cout << "--- Circle drawn with 3 different renderers ---\n\n";
+
+    Circle circle(opengl, 100.0f, 200.0f, 50.0f);
+    circle.draw();
+    circle.setRenderer(vulkan);
+    circle.draw();
+    circle.setRenderer(software);
+    circle.draw();
+
+    std::cout << "\n--- Rectangle drawn with 3 different renderers ---\n\n";
+
+    Rectangle rect(opengl, 10.0f, 20.0f, 300.0f, 150.0f);
+    rect.draw();
+    rect.setRenderer(vulkan);
+    rect.draw();
+    rect.setRenderer(software);
+    rect.draw();
+
+    std::cout << "\n";
+    std::cout << "Key point: 2 shapes x 3 renderers = only 5 classes\n";
+    std::cout << "(2 Shape + 3 Renderer) instead of 6 subclasses.\n";
+    std::cout << "Adding a new shape or renderer requires only 1 new class.\n";
+
+    return 0;
+}
