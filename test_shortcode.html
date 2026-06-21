@@ -1,6 +1,0 @@
-{{ $code := readFile "static/code/builder/main.cpp" }}
-{{ if $code }}
-  READ OK: {{ len $code }} bytes
-{{ else }}
-  READ FAILED
-{{ end }}
