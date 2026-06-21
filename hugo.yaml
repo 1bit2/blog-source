@@ -6,7 +6,7 @@
 baseurl: "https://1bit2.github.io/"  # 网站根URL地址
 languageCode: en-us                          # 网站语言代码
 theme: hugo-theme-stack                      # 使用的主题名称
-title: 二进制                          # 网站标题
+title: 深栈                          # 网站标题 — 双关：调用栈 × 深入探索
 
 
 # 国际化支持配置
@@ -25,7 +25,7 @@ disableLanguages: ["zh-cn", "ar", "ja", "ko", "fr", "de", "es"]
 languages:
     en:                                      # 英语配置
         languageName: English                # 语言显示名称
-        title: 二进制                  # 英文网站标题
+        title: 深栈                  # 英文网站标题
         weight: 1                           # 语言权重
         params:
             sidebar:
